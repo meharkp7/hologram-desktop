@@ -1,0 +1,24 @@
+{
+    "cursor_finger_id": 8,
+    "smoothing_factor": 0.5,
+    "active_zone_margin": 100,
+    "fps_display_enabled": true,
+    "calibration_data": {
+        "Top-Left": [
+            0.0704229474067688,
+            0.15529413521289825
+        ],
+        "Top-Right": [
+            0.9017637968063354,
+            0.09005552530288696
+        ],
+        "Bottom-Right": [
+            0.9272354245185852,
+            0.8918542265892029
+        ],
+        "Bottom-Left": [
+            0.08073550462722778,
+            0.8475220203399658
+        ]
+    }
+}

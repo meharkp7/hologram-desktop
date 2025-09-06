@@ -5,25 +5,95 @@ import time
 import json
 import math
 
-# Load configuration from file
-try:
-    with open('config.json', 'r') as f:
-        config = json.load(f)
-except FileNotFoundError:
-    print("Error: config.json not found. Using default values.")
-    config = {
-        "cursor_finger_id": 8,
-        "smoothing_factor": 0.5,
-        "active_zone_margin": 100,
-        "fps_display_enabled": True
-    }
+# --- State variables (must be initialized before any functions use them) ---
+pinch_threshold = 30
+click_cooldown = 0.5
+right_click_cooldown = 0.5
+SCROLL_FACTOR = 0.5
+SMOOTHING_FACTOR = 0.5
+ACTIVE_ZONE_MARGIN = 100
+FPS_DISPLAY_ENABLED = True
+is_pinching = False
+is_dragging = False
+is_selecting = False
+drag_start_time = 0
+drag_hold_duration = 0.25
+last_pinch_time = 0
+last_scroll_y = 0
+last_scroll_x = 0
 
-# -- Customization Parameters loaded from config --
-CURSOR_FINGER_ID = config["cursor_finger_id"]
-SMOOTHING_FACTOR = config["smoothing_factor"]
-ACTIVE_ZONE_MARGIN = config["active_zone_margin"]
-FPS_DISPLAY_ENABLED = config["fps_display_enabled"]
+# --- Calibration Function ---
+def calibrate():
+    points = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"]
+    calibration_points = {}
+    
+    initial_mouse_x, initial_mouse_y = pyautogui.position()
 
+    for point_name in points:
+        print(f"Calibrating: Place your index finger on the {point_name} of the webcam view and pinch your thumb and index finger to capture.")
+        
+        time.sleep(1) 
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            frame_h, frame_w, _ = frame.shape
+            frame = cv2.flip(frame, 1)
+
+            imgRGB = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = hands.process(imgRGB)
+            
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            text = f"Place finger on {point_name} (Pinch to capture)"
+            
+            (text_width, text_height), baseline = cv2.getTextSize(text, font, 1, 2)
+            
+            text_x = 20
+            text_y = 50
+            
+            cv2.rectangle(frame, (text_x - 5, text_y - text_height - 5), 
+                          (text_x + text_width + 5, text_y + baseline + 5), 
+                          (0, 0, 0), cv2.FILLED)
+            
+            cv2.putText(frame, text, (text_x, text_y), font, 1, (255, 255, 255), 2)
+
+            if results.multi_hand_landmarks:
+                hand_landmarks = results.multi_hand_landmarks[0]
+                index_tip = hand_landmarks.landmark[8]
+                
+                cv2.circle(frame, (int(index_tip.x * frame_w), int(index_tip.y * frame_h)), 10, (0, 255, 0), cv2.FILLED)
+                
+                thumb_tip = hand_landmarks.landmark[4]
+                dist_pinch = math.sqrt((thumb_tip.x * frame_w - index_tip.x * frame_w)**2 + (thumb_tip.y * frame_h - index_tip.y * frame_h)**2)
+                
+                if dist_pinch < pinch_threshold:
+                    calibration_points[point_name] = (index_tip.x, index_tip.y)
+                    print(f"Captured {point_name}: {calibration_points[point_name]}")
+                    time.sleep(1)
+                    break
+            
+            cv2.imshow("Calibration", frame)
+            if cv2.waitKey(1) & 0xFF == 27:
+                print("Calibration interrupted by user.")
+                pyautogui.moveTo(initial_mouse_x, initial_mouse_y)
+                cap.release()
+                cv2.destroyAllWindows()
+                exit()
+        
+        if not ret:
+            print("Webcam disconnected during calibration.")
+            pyautogui.moveTo(initial_mouse_x, initial_mouse_y)
+            cap.release()
+            cv2.destroyAllWindows()
+            exit()
+    
+    cv2.destroyAllWindows()
+    pyautogui.moveTo(initial_mouse_x, initial_mouse_y)
+    return calibration_points
+
+# --- Main Program ---
 # Initialize webcam and MediaPipe
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
@@ -34,26 +104,42 @@ mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
 mp_draw = mp.solutions.drawing_utils
 
+# Load configuration from file
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    if "calibration_data" not in config:
+        print("Calibration data not found. Starting calibration...")
+        raise FileNotFoundError
+except FileNotFoundError:
+    config = {
+        "cursor_finger_id": 8,
+        "smoothing_factor": SMOOTHING_FACTOR,
+        "active_zone_margin": ACTIVE_ZONE_MARGIN,
+        "fps_display_enabled": FPS_DISPLAY_ENABLED
+    }
+    calibration_data = calibrate() 
+    config["calibration_data"] = calibration_data
+    with open('config.json', 'w') as f:
+        json.dump(config, f, indent=4)
+    print("Calibration complete. Data saved.")
+    
+# -- Update parameters from config --
+CURSOR_FINGER_ID = config["cursor_finger_id"]
+SMOOTHING_FACTOR = config["smoothing_factor"]
+ACTIVE_ZONE_MARGIN = config["active_zone_margin"]
+FPS_DISPLAY_ENABLED = config["fps_display_enabled"]
+
+# Get calibration data
+cal_tl_x, cal_tl_y = config["calibration_data"]["Top-Left"]
+cal_br_x, cal_br_y = config["calibration_data"]["Bottom-Right"]
+
 # Get screen dimensions
 screen_w, screen_h = pyautogui.size()
 
 # Initialize variables for smoothing and FPS
 prev_x, prev_y = screen_w // 2, screen_h // 2
 pTime = 0
-
-# Variables for gestures
-pinch_threshold = 30
-last_pinch_time = 0
-right_click_cooldown = 0.5
-
-# Scrolling variables
-last_scroll_y = 0
-# The scroll factor now directly controls the sensitivity of the velocity-based scrolling
-SCROLL_FACTOR = 0.5 
-
-# State variables
-is_pinching = False
-is_dragging = False
 
 while True:
     ret, frame = cap.read()
@@ -73,12 +159,21 @@ while True:
             thumb_tip = hand_landmarks.landmark[4]
             index_tip = hand_landmarks.landmark[8]
             middle_tip = hand_landmarks.landmark[12]
+            ring_tip = hand_landmarks.landmark[16]
+            pinky_tip = hand_landmarks.landmark[20]
             
             index_base = hand_landmarks.landmark[5]
             middle_base = hand_landmarks.landmark[9]
-            
+            ring_base = hand_landmarks.landmark[13]
+            pinky_base = hand_landmarks.landmark[17]
+
             is_index_up = index_tip.y < index_base.y
             is_middle_up = middle_tip.y < middle_base.y
+            is_ring_up = ring_tip.y < ring_base.y
+            is_pinky_up = pinky_tip.y < pinky_base.y
+            
+            is_fist = not is_index_up and not is_middle_up and not is_ring_up and not is_pinky_up
+            is_open_palm = is_index_up and is_middle_up and is_ring_up and is_pinky_up
 
             # --- Right-Click Logic (Three-Finger Pinch) ---
             dist_thumb_index = math.sqrt((thumb_tip.x * frame_w - index_tip.x * frame_w)**2 + (thumb_tip.y * frame_h - index_tip.y * frame_h)**2)
@@ -87,69 +182,107 @@ while True:
             if dist_thumb_index < pinch_threshold and dist_index_middle < pinch_threshold and time.time() - last_pinch_time > right_click_cooldown:
                 pyautogui.rightClick()
                 last_pinch_time = time.time()
-                
+
             # --- Scrolling Logic (Two-Finger Up) ---
-            if is_index_up and is_middle_up:
+            if is_index_up and is_middle_up and not is_ring_up and not is_pinky_up:
                 current_scroll_y = index_tip.y * frame_h
-                if last_scroll_y != 0:
-                    # Calculate velocity and scroll
-                    velocity = current_scroll_y - last_scroll_y
-                    pyautogui.scroll(int(velocity * SCROLL_FACTOR))
+                current_scroll_x = index_tip.x * frame_w
+
+                if last_scroll_y != 0 or last_scroll_x != 0:
+                    scroll_delta_y = last_scroll_y - current_scroll_y
+                    scroll_delta_x = last_scroll_x - current_scroll_x
+
+                    if abs(scroll_delta_y) > abs(scroll_delta_x):
+                        pyautogui.scroll(int(scroll_delta_y * SCROLL_FACTOR))
+                    else:
+                        pyautogui.hscroll(int(scroll_delta_x * -SCROLL_FACTOR))
+
                 last_scroll_y = current_scroll_y
+                last_scroll_x = current_scroll_x
                 
-                # We use a 'continue' here to skip all other logic when in scroll mode
                 continue
             else:
                 last_scroll_y = 0
-                
-            # --- Left-Click and Drag Logic (Pinch) ---
+                last_scroll_x = 0
+            
+            # --- Left-Click Logic (Quick Pinch) ---
             dist_pinch = math.sqrt((thumb_tip.x * frame_w - index_tip.x * frame_w)**2 + (thumb_tip.y * frame_h - index_tip.y * frame_h)**2)
             
-            if dist_pinch < pinch_threshold:
-                if not is_pinching:
-                    pyautogui.click()
-                    is_pinching = True
-                
-                if not is_dragging:
-                    pyautogui.mouseDown(button='left')
-                    is_dragging = True
-            else:
-                if is_dragging:
-                    pyautogui.mouseUp(button='left')
-                    is_dragging = False
+            if dist_pinch < pinch_threshold and (time.time() - last_pinch_time) > click_cooldown and not is_pinching:
+                pyautogui.click()
+                is_pinching = True
+            elif dist_pinch >= pinch_threshold:
                 is_pinching = False
-
+            
+            # --- Dragging & Selection Logic ---
+            if is_fist:
+                if not is_selecting:
+                    pyautogui.mouseDown(button='left')
+                    is_selecting = True
+                    drag_start_time = time.time()
+                
+                if (time.time() - drag_start_time) > drag_hold_duration and not is_dragging:
+                    is_dragging = True
+            
+            if is_open_palm and is_dragging:
+                pyautogui.mouseUp(button='left')
+                is_selecting = False
+                is_dragging = False
+                drag_start_time = 0
+                
+            if not is_fist and is_selecting:
+                pyautogui.mouseUp(button='left')
+                is_selecting = False
+                
             # --- Cursor Control ---
-            target_landmark = hand_landmarks.landmark[CURSOR_FINGER_ID]
-            raw_x = int(target_landmark.x * frame_w)
-            raw_y = int(target_landmark.y * frame_h)
+            # Map hand coordinates using calibration data
+            # Map to screen coordinates using a scaled mapping from the calibration points
+            normalized_x = (index_tip.x - cal_tl_x) / (cal_br_x - cal_tl_x)
+            normalized_y = (index_tip.y - cal_tl_y) / (cal_br_y - cal_tl_y)
             
-            active_w = frame_w - 2 * ACTIVE_ZONE_MARGIN
-            active_h = frame_h - 2 * ACTIVE_ZONE_MARGIN
-            
-            scaled_x = (raw_x - ACTIVE_ZONE_MARGIN) / active_w
-            scaled_y = (raw_y - ACTIVE_ZONE_MARGIN) / active_h
-            
-            scaled_x = max(0, min(scaled_x, 1))
-            scaled_y = max(0, min(scaled_y, 1))
-            
-            target_x = scaled_x * screen_w
-            target_y = scaled_y * screen_h
+            if is_dragging:
+                drag_landmark = hand_landmarks.landmark[9]
+                normalized_drag_x = (drag_landmark.x - cal_tl_x) / (cal_br_x - cal_tl_x)
+                normalized_drag_y = (drag_landmark.y - cal_tl_y) / (cal_br_y - cal_tl_y)
+                
+                target_x = normalized_drag_x * screen_w
+                target_y = normalized_drag_y * screen_h
+            else:
+                target_x = normalized_x * screen_w
+                target_y = normalized_y * screen_h
             
             smooth_x = prev_x + (target_x - prev_x) * SMOOTHING_FACTOR
             smooth_y = prev_y + (target_y - prev_y) * SMOOTHING_FACTOR
             
             pyautogui.moveTo(smooth_x, smooth_y)
             prev_x, prev_y = smooth_x, smooth_y
-            
-            cv2.circle(frame, (raw_x, raw_y), 10, (255, 0, 255), cv2.FILLED)
 
+    # Initialize raw_x and raw_y with default values for each frame
+    raw_x, raw_y = 0, 0
+    if results.multi_hand_landmarks:
+        # Get the final raw coordinates for the circle
+        if is_dragging:
+            drag_landmark = hand_landmarks.landmark[9]
+            raw_x = int(drag_landmark.x * frame_w)
+            raw_y = int(drag_landmark.y * frame_h)
+        else:
+            target_landmark = hand_landmarks.landmark[CURSOR_FINGER_ID]
+            raw_x = int(target_landmark.x * frame_w)
+            raw_y = int(target_landmark.y * frame_h)
+
+        cv2.circle(frame, (raw_x, raw_y), 10, (255, 0, 255), cv2.FILLED)
+            
     else:
+        if is_selecting:
+            pyautogui.mouseUp(button='left')
+            is_selecting = False
         if is_dragging:
             pyautogui.mouseUp(button='left')
             is_dragging = False
         is_pinching = False
+        drag_start_time = 0
         last_scroll_y = 0
+        last_scroll_x = 0
             
     # Display FPS
     cTime = time.time()
