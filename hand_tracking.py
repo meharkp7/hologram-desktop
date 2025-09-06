@@ -21,6 +21,7 @@ drag_hold_duration = 0.25
 last_pinch_time = 0
 last_scroll_y = 0
 last_scroll_x = 0
+is_paused = False
 
 # --- Calibration Function ---
 def calibrate():
@@ -153,6 +154,7 @@ while True:
     results = hands.process(rgb_frame)
 
     if results.multi_hand_landmarks:
+        is_paused = False
         for hand_landmarks in results.multi_hand_landmarks:
             mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
             
@@ -175,104 +177,102 @@ while True:
             is_fist = not is_index_up and not is_middle_up and not is_ring_up and not is_pinky_up
             is_open_palm = is_index_up and is_middle_up and is_ring_up and is_pinky_up
 
-            # --- Right-Click Logic (Three-Finger Pinch) ---
-            dist_thumb_index = math.sqrt((thumb_tip.x * frame_w - index_tip.x * frame_w)**2 + (thumb_tip.y * frame_h - index_tip.y * frame_h)**2)
-            dist_index_middle = math.sqrt((index_tip.x * frame_w - middle_tip.x * frame_w)**2 + (index_tip.y * frame_h - middle_tip.y * frame_h)**2)
-            
-            if dist_thumb_index < pinch_threshold and dist_index_middle < pinch_threshold and time.time() - last_pinch_time > right_click_cooldown:
-                pyautogui.rightClick()
-                last_pinch_time = time.time()
-
-            # --- Scrolling Logic (Two-Finger Up) ---
-            if is_index_up and is_middle_up and not is_ring_up and not is_pinky_up:
-                current_scroll_y = index_tip.y * frame_h
-                current_scroll_x = index_tip.x * frame_w
-
-                if last_scroll_y != 0 or last_scroll_x != 0:
-                    scroll_delta_y = last_scroll_y - current_scroll_y
-                    scroll_delta_x = last_scroll_x - current_scroll_x
-
-                    if abs(scroll_delta_y) > abs(scroll_delta_x):
-                        pyautogui.scroll(int(scroll_delta_y * SCROLL_FACTOR))
-                    else:
-                        pyautogui.hscroll(int(scroll_delta_x * -SCROLL_FACTOR))
-
-                last_scroll_y = current_scroll_y
-                last_scroll_x = current_scroll_x
+            # All gestures and pyautogui commands are now wrapped in a check for "not paused"
+            if not is_paused:
+                # --- Right-Click Logic (Three-Finger Pinch) ---
+                dist_thumb_index = math.sqrt((thumb_tip.x * frame_w - index_tip.x * frame_w)**2 + (thumb_tip.y * frame_h - index_tip.y * frame_h)**2)
+                dist_index_middle = math.sqrt((index_tip.x * frame_w - middle_tip.x * frame_w)**2 + (index_tip.y * frame_h - middle_tip.y * frame_h)**2)
                 
-                continue
-            else:
-                last_scroll_y = 0
-                last_scroll_x = 0
-            
-            # --- Left-Click Logic (Quick Pinch) ---
-            dist_pinch = math.sqrt((thumb_tip.x * frame_w - index_tip.x * frame_w)**2 + (thumb_tip.y * frame_h - index_tip.y * frame_h)**2)
-            
-            if dist_pinch < pinch_threshold and (time.time() - last_pinch_time) > click_cooldown and not is_pinching:
-                pyautogui.click()
-                is_pinching = True
-            elif dist_pinch >= pinch_threshold:
-                is_pinching = False
-            
-            # --- Dragging & Selection Logic ---
-            if is_fist:
-                if not is_selecting:
-                    pyautogui.mouseDown(button='left')
-                    is_selecting = True
-                    drag_start_time = time.time()
-                
-                if (time.time() - drag_start_time) > drag_hold_duration and not is_dragging:
-                    is_dragging = True
-            
-            if is_open_palm and is_dragging:
-                pyautogui.mouseUp(button='left')
-                is_selecting = False
-                is_dragging = False
-                drag_start_time = 0
-                
-            if not is_fist and is_selecting:
-                pyautogui.mouseUp(button='left')
-                is_selecting = False
-                
-            # --- Cursor Control ---
-            # Map hand coordinates using calibration data
-            # Map to screen coordinates using a scaled mapping from the calibration points
-            normalized_x = (index_tip.x - cal_tl_x) / (cal_br_x - cal_tl_x)
-            normalized_y = (index_tip.y - cal_tl_y) / (cal_br_y - cal_tl_y)
-            
-            if is_dragging:
-                drag_landmark = hand_landmarks.landmark[9]
-                normalized_drag_x = (drag_landmark.x - cal_tl_x) / (cal_br_x - cal_tl_x)
-                normalized_drag_y = (drag_landmark.y - cal_tl_y) / (cal_br_y - cal_tl_y)
-                
-                target_x = normalized_drag_x * screen_w
-                target_y = normalized_drag_y * screen_h
-            else:
-                target_x = normalized_x * screen_w
-                target_y = normalized_y * screen_h
-            
-            smooth_x = prev_x + (target_x - prev_x) * SMOOTHING_FACTOR
-            smooth_y = prev_y + (target_y - prev_y) * SMOOTHING_FACTOR
-            
-            pyautogui.moveTo(smooth_x, smooth_y)
-            prev_x, prev_y = smooth_x, smooth_y
+                if dist_thumb_index < pinch_threshold and dist_index_middle < pinch_threshold and time.time() - last_pinch_time > right_click_cooldown:
+                    pyautogui.rightClick()
+                    last_pinch_time = time.time()
 
-    # Initialize raw_x and raw_y with default values for each frame
-    raw_x, raw_y = 0, 0
-    if results.multi_hand_landmarks:
-        # Get the final raw coordinates for the circle
-        if is_dragging:
-            drag_landmark = hand_landmarks.landmark[9]
-            raw_x = int(drag_landmark.x * frame_w)
-            raw_y = int(drag_landmark.y * frame_h)
-        else:
-            target_landmark = hand_landmarks.landmark[CURSOR_FINGER_ID]
-            raw_x = int(target_landmark.x * frame_w)
-            raw_y = int(target_landmark.y * frame_h)
+                # --- Scrolling Logic (Two-Finger Up) ---
+                if is_index_up and is_middle_up and not is_ring_up and not is_pinky_up:
+                    current_scroll_y = index_tip.y * frame_h
+                    current_scroll_x = index_tip.x * frame_w
 
-        cv2.circle(frame, (raw_x, raw_y), 10, (255, 0, 255), cv2.FILLED)
-            
+                    if last_scroll_y != 0 or last_scroll_x != 0:
+                        scroll_delta_y = last_scroll_y - current_scroll_y
+                        scroll_delta_x = last_scroll_x - current_scroll_x
+
+                        if abs(scroll_delta_y) > abs(scroll_delta_x):
+                            pyautogui.scroll(int(scroll_delta_y * SCROLL_FACTOR))
+                        else:
+                            pyautogui.hscroll(int(scroll_delta_x * -SCROLL_FACTOR))
+
+                    last_scroll_y = current_scroll_y
+                    last_scroll_x = current_scroll_x
+                    
+                    continue
+                else:
+                    last_scroll_y = 0
+                    last_scroll_x = 0
+                
+                # --- Left-Click Logic (Quick Pinch) ---
+                dist_pinch = math.sqrt((thumb_tip.x * frame_w - index_tip.x * frame_w)**2 + (thumb_tip.y * frame_h - index_tip.y * frame_h)**2)
+                
+                if dist_pinch < pinch_threshold and (time.time() - last_pinch_time) > click_cooldown and not is_pinching:
+                    pyautogui.click()
+                    is_pinching = True
+                elif dist_pinch >= pinch_threshold:
+                    is_pinching = False
+                
+                # --- Dragging & Selection Logic ---
+                if is_fist:
+                    if not is_selecting:
+                        pyautogui.mouseDown(button='left')
+                        is_selecting = True
+                        drag_start_time = time.time()
+                    
+                    if (time.time() - drag_start_time) > drag_hold_duration and not is_dragging:
+                        is_dragging = True
+                
+                if is_open_palm and is_dragging:
+                    pyautogui.mouseUp(button='left')
+                    is_selecting = False
+                    is_dragging = False
+                    drag_start_time = 0
+                    
+                if not is_fist and is_selecting:
+                    pyautogui.mouseUp(button='left')
+                    is_selecting = False
+                    
+                # --- Cursor Control ---
+                normalized_x = (index_tip.x - cal_tl_x) / (cal_br_x - cal_tl_x)
+                normalized_y = (index_tip.y - cal_tl_y) / (cal_br_y - cal_tl_y)
+                
+                if is_dragging:
+                    drag_landmark = hand_landmarks.landmark[9]
+                    normalized_drag_x = (drag_landmark.x - cal_tl_x) / (cal_br_x - cal_tl_x)
+                    normalized_drag_y = (drag_landmark.y - cal_tl_y) / (cal_br_y - cal_tl_y)
+                    
+                    target_x = normalized_drag_x * screen_w
+                    target_y = normalized_drag_y * screen_h
+                else:
+                    target_x = normalized_x * screen_w
+                    target_y = normalized_y * screen_h
+                
+                smooth_x = prev_x + (target_x - prev_x) * SMOOTHING_FACTOR
+                smooth_y = prev_y + (target_y - prev_y) * SMOOTHING_FACTOR
+                
+                pyautogui.moveTo(smooth_x, smooth_y)
+                prev_x, prev_y = smooth_x, smooth_y
+                
+                # Get the raw coordinates for the circle after all calculations
+                if is_dragging:
+                    raw_x = int(hand_landmarks.landmark[9].x * frame_w)
+                    raw_y = int(hand_landmarks.landmark[9].y * frame_h)
+                else:
+                    raw_x = int(index_tip.x * frame_w)
+                    raw_y = int(index_tip.y * frame_h)
+
+                cv2.circle(frame, (raw_x, raw_y), 10, (255, 0, 255), cv2.FILLED)
+
     else:
+        is_paused = True
+        
+        # Reset any active states to prevent ghost inputs
         if is_selecting:
             pyautogui.mouseUp(button='left')
             is_selecting = False
@@ -283,12 +283,15 @@ while True:
         drag_start_time = 0
         last_scroll_y = 0
         last_scroll_x = 0
-            
-    # Display FPS
+        
+    # Display FPS and status
     cTime = time.time()
     fps = 1 / (cTime - pTime)
     pTime = cTime
-    cv2.putText(frame, f'FPS: {int(fps)}', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
+    status_text = "Status: Paused" if is_paused else "Status: Active"
+    cv2.putText(frame, status_text, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255) if is_paused else (0, 255, 0), 2)
+    cv2.putText(frame, f'FPS: {int(fps)}', (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
     cv2.imshow("Hand Tracking", frame)
 
