@@ -1,24 +1,71 @@
 {
-    "cursor_finger_id": 8,
-    "smoothing_factor": 0.5,
-    "active_zone_margin": 100,
-    "fps_display_enabled": true,
-    "calibration_data": {
-        "Top-Left": [
-            0.0704229474067688,
-            0.15529413521289825
-        ],
-        "Top-Right": [
-            0.9017637968063354,
-            0.09005552530288696
-        ],
-        "Bottom-Right": [
-            0.9272354245185852,
-            0.8918542265892029
-        ],
-        "Bottom-Left": [
-            0.08073550462722778,
-            0.8475220203399658
-        ]
-    }
+  "cursor_finger_id": 8,
+  "smoothing_factor": 0.5,
+  "active_zone_margin": 100,
+  "fps_display_enabled": true,
+  "calibration_data": {
+    "Top-Left": [
+      0.0704229474067688,
+      0.15529413521289825
+    ],
+    "Top-Right": [
+      0.9017637968063354,
+      0.09005552530288696
+    ],
+    "Bottom-Right": [
+      0.9272354245185852,
+      0.8918542265892029
+    ],
+    "Bottom-Left": [
+      0.08073550462722778,
+      0.8475220203399658
+    ]
+  },
+  "pinch_threshold": 54,
+  "scroll_factor": 0.5,
+  "drag_hold_duration": 0.25,
+  "pinch_debounce_min": 0.05,
+  "double_click_interval": 0.4,
+  "hesitation_threshold": 1.2,
+  "snap_radius": 120,
+  "snap_strength": 0.8,
+  "deadzone_px": 4,
+  "fps_display": true,
+  "tutorial_completed": true,
+  "hotspots": [
+    [
+      969.75,
+      437.5
+    ]
+  ],
+  "click_cooldown": 0.12,
+  "right_click_cooldown": 0.5,
+  "mode": "precision",
+  "seen_tutorials": {
+    "work": false,
+    "presentation": false,
+    "media": false
+  },
+  "pinch_debounce": 0.06,
+  "drag_hold": 0.22,
+  "stabilize_alpha": 0.35,
+  "calibration": {
+    "Top-Left": [
+      0.6514954566955566,
+      0.5283212065696716
+    ],
+    "Top-Right": [
+      0.6474473476409912,
+      0.538672149181366
+    ],
+    "Bottom-Right": [
+      0.6568444967269897,
+      0.520287275314331
+    ],
+    "Bottom-Left": [
+      0.6546199321746826,
+      0.5298340916633606
+    ]
+  },
+  "tutorial_done": true
 }
