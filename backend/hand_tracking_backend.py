@@ -616,5 +616,22 @@ def pyautogui_size():
         # fallback hardcoded
         return 1920, 1080
 
+# Global thread handle
+_hand_tracking_thread = None
+
+def start_hand_tracking():
+    global _hand_tracking_thread
+    if _hand_tracking_thread is None or not _hand_tracking_thread.is_alive():
+        import threading
+        _hand_tracking_thread = threading.Thread(target=main, daemon=True)
+        _hand_tracking_thread.start()
+    return _hand_tracking_thread
+
+def stop_hand_tracking():
+    from hand_tracking_backend import shutdown_flag
+    shutdown_flag.set()
+    if _hand_tracking_thread:
+        _hand_tracking_thread.join()
+
 if __name__ == "__main__":
     main()
