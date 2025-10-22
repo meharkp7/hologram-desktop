@@ -40,3 +40,25 @@
 .read-the-docs {
   color: #888;
 }
+
+.notification {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 25px;
+  background: rgba(115, 117, 219, 0.8);
+  color: #fff;
+  font-family: monospace;
+  font-size: 16px;
+  border-radius: 10px;
+  box-shadow: 0 0 15px #7375db;
+  z-index: 9999;
+  animation: floatUp 1.2s ease forwards;
+}
+
+@keyframes floatUp {
+  0% { opacity: 0; transform: translateX(-50%) translateY(20px); }
+  10% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-30px); }
+}

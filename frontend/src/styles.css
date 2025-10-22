@@ -1,0 +1,114 @@
+:root{
+  --bg: #06070a;
+  --panel: rgba(20,20,24,0.6);
+  --accent: #ff3fa2; /* magenta */
+  --accent-2: #8affc1; /* teal */
+  --muted: #9aa0a6;
+  --glass: rgba(255,255,255,0.04);
+  --shadow: 0 6px 20px rgba(0,0,0,0.6);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+}
+
+*{box-sizing:border-box}
+html,body,#root{height:100%;margin:0;background:linear-gradient(180deg,#050506 0%, #0b0b0d 100%);font-family:var(--font-sans);-webkit-font-smoothing:antialiased}
+
+.app-root{
+  height:100%;
+}
+
+/* HUD */
+.hud{
+  position:fixed;
+  left:18px;
+  top:18px;
+  z-index:9998;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+
+.hud-top{
+  display:flex;
+  gap:12px;
+  background:var(--panel);
+  padding:10px 12px;
+  border-radius:12px;
+  box-shadow:var(--shadow);
+  backdrop-filter: blur(6px);
+  align-items:center;
+}
+.hud-item{display:flex;flex-direction:column;min-width:82px}
+.hud-item .label{font-size:10px;color:var(--muted);letter-spacing:0.6px}
+.hud-item .value{font-weight:700;font-size:14px;color:#fff}
+.hud-item .value.open{color:var(--accent-2)}
+.hud-item .value.error{color:#ff8a8a}
+
+.hud-bottom{background:var(--glass);padding:8px 10px;border-radius:10px;color:var(--muted);font-size:13px;max-width:420px;box-shadow:var(--shadow)}
+
+/* control panel */
+.control-panel{
+  position:fixed;
+  right:18px;
+  top:18px;
+  z-index:9998;
+  display:flex;
+  gap:8px;
+  background:transparent;
+}
+.control-panel button{
+  padding:8px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.04);background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);color:#fff;font-weight:600;cursor:pointer;backdrop-filter:blur(6px);
+  transition:all .18s ease;
+}
+.control-panel button:hover{transform:translateY(-2px)}
+.control-panel button.active{box-shadow:0 6px 22px rgba(255,63,162,0.08);border-color:rgba(255,63,162,0.18)}
+
+/* Cursor dot + trail */
+.cursor-trail{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:9997}
+.hotspot-layer{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:9996}
+.trail-dot{
+  position:absolute;width:8px;height:8px;border-radius:50%;background:linear-gradient(180deg,rgba(255,63,162,0.95),rgba(138,255,193,0.7));filter:blur(0.6px);pointer-events:none;mix-blend-mode:screen;
+  transform-origin:center center;
+}
+
+.cursor-dot{
+  position:fixed;
+  width:40px;height:40px;border-radius:50%;
+  z-index:9999; pointer-events:none; transform:translate3d(-50%,-50%,0);
+  display:flex;align-items:center;justify-content:center;
+  transition:box-shadow .12s ease, transform .06s ease;
+}
+.cursor-core{
+  width:18px;height:18px;border-radius:50%;background:linear-gradient(180deg,var(--accent),#ff83ba);box-shadow:0 6px 20px rgba(255,63,162,0.12), inset 0 -2px 6px rgba(0,0,0,0.2)
+}
+
+/* ripple */
+.ripple{
+  position:fixed;width:120px;height:120px;border-radius:50%;pointer-events:none;z-index:9996;opacity:0.95;transform:scale(.2);background:radial-gradient(circle at 45% 35%, rgba(255,63,162,0.18), rgba(138,255,193,0.06));
+  animation:rippleIn .38s ease forwards;
+}
+.ripple-fade{animation:rippleOut .28s ease forwards}
+@keyframes rippleIn {from{transform:scale(.2);opacity:.9}to{transform:scale(1);opacity:.55}}
+@keyframes rippleOut {from{opacity:.55}to{opacity:0;transform:scale(1.8)}}
+
+/* hotspot marker */
+.hotspot-dot{position:absolute;width:16px;height:16px;border-radius:6px;border:2px solid rgba(138,255,193,0.85);background:transparent;box-shadow:0 4px 18px rgba(0,0,0,0.4);pointer-events:none}
+
+/* zoom pill */
+.zoom-pill{position:fixed;right:20px;bottom:20px;z-index:9999;pointer-events:none}
+.zoom-pill-inner{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);padding:8px 12px;border-radius:12px;color:#fff;display:flex;align-items:center;gap:12px;box-shadow:0 10px 30px rgba(0,0,0,0.6)}
+.zoom-value{font-weight:800;color:#fff}
+.zoom-line{height:6px;background:linear-gradient(90deg,var(--accent),var(--accent-2));border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,0.45)}
+
+/* gesture bubble */
+.gesture-bubble{position:fixed;left:20%;bottom:16px;z-index:9999;display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:14px;color:#fff}
+.gesture-bubble .gesture-label{font-weight:700;letter-spacing:0.6px}
+
+/* small UI niceties */
+button, input, select{font-family:var(--font-sans);}
+
+/* responsive */
+@media (max-width:720px){
+  .hud-top{display:none}
+  .control-panel{right:8px;top:8px}
+  .gesture-bubble{left:10px}
+}
