@@ -28,7 +28,7 @@ import queue
 import platform
 from pynput.mouse import Controller as MouseController, Button
 from pynput.keyboard import Controller as KeyboardController, Key
-
+from utils import HandTrackingState
 # ------------------------
 # USER-TUNABLE PARAMETERS
 # ------------------------
@@ -151,22 +151,28 @@ def capture_thread():
 # ------------------------
 # Calibration routine
 # ------------------------
-def calibrate_interactive():
+def calibrate_interactive(timeout_per_point=10.0):
     """
-    4-point calibration (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
-    Returns normalized calibration points and computed pinch_threshold in pixels.
+    Non-blocking, robust 4-point calibration. Press 'c' to capture current index
+    position when you see it in the preview, or pinch to auto-capture.
+    timeout_per_point: seconds to wait before skipping that point.
+    Returns cal_pts dict and computed pinch threshold.
     """
     global pinch_threshold
     points = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"]
     cal_pts = {}
     pinch_samples = []
 
-    print("Calibration: Place your index fingertip at each corner of the webcam preview and pinch to capture.")
-    time.sleep(0.6)
+    print("Calibration: point to each corner and either pinch or press 'c' to capture.")
+    time.sleep(0.3)
     for pt in points:
-        print(f" -> Place fingertip at {pt} in preview, then pinch to capture.")
+        print(f" -> Place fingertip at {pt}, then pinch or press 'c' to capture.")
+        start_t = time.time()
         captured = False
-        while not captured:
+        stable_count = 0
+        last_dist = None
+
+        while not captured and (time.time() - start_t) < timeout_per_point:
             with frame_lock:
                 frame = _latest_frame.copy() if _latest_frame is not None else None
             if frame is None:
@@ -174,32 +180,66 @@ def calibrate_interactive():
                 continue
             display = frame.copy()
             fh, fw = display.shape[:2]
-            cv2.putText(display, f"Pinch at {pt}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
+            cv2.putText(display, f"Pinch or press 'c' at {pt}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
 
-            # detect hand quickly for capturing
             rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
             results = hands.process(rgb)
+            key = cv2.waitKey(1) & 0xFF
+
             if results.multi_hand_landmarks:
                 lm = results.multi_hand_landmarks[0]
                 index = lm.landmark[8]
                 thumb = lm.landmark[4]
                 ix, iy = int(index.x * fw), int(index.y * fh)
                 tx, ty = int(thumb.x * fw), int(thumb.y * fh)
-                cv2.circle(display, (ix, iy), 10, (0,255,0), -1)
+                cv2.circle(display, (ix, iy), 8, (0,255,0), -1)
+
                 dist = math.hypot((tx-ix),(ty-iy))
+                # gather pinch samples for threshold computation if user pinches briefly
                 if dist < DEFAULT_PINCH_THRESHOLD * 2:
                     pinch_samples.append(dist)
-                if dist < DEFAULT_PINCH_THRESHOLD:
-                    cal_pts[pt] = (index.x, index.y)
-                    print(f"Captured {pt}: {cal_pts[pt]}")
-                    time.sleep(0.4)
-                    captured = True
 
-            cv2.imshow("Calibration", display)
-            if cv2.waitKey(1) & 0xFF == 27:
+                # auto-capture when pinch close and stable
+                if dist < DEFAULT_PINCH_THRESHOLD:
+                    if last_dist is None or abs(dist - last_dist) < 6:
+                        stable_count += 1
+                    else:
+                        stable_count = 0
+                    last_dist = dist
+                    if stable_count >= 3:  # stable for a few frames
+                        cal_pts[pt] = (index.x, index.y)
+                        print(f"Auto-captured {pt}: {cal_pts[pt]}")
+                        time.sleep(0.3)
+                        captured = True
+
+            # manual capture (press 'c')
+            if key == ord('c'):
+                if results and results.multi_hand_landmarks:
+                    lm = results.multi_hand_landmarks[0]
+                    index = lm.landmark[8]
+                    cal_pts[pt] = (index.x, index.y)
+                    print(f"Manual-captured {pt}: {cal_pts[pt]}")
+                    captured = True
+                else:
+                    print("No hand visible to capture; try again.")
+            # allow abort
+            if key == 27:
                 print("Calibration aborted by user.")
                 return None, None
-        # next point
+
+            cv2.imshow("Calibration", display)
+
+        if not captured:
+            # fallback: use corner defaults if user timed out
+            default = {
+                "Top-Left": (0.05, 0.12),
+                "Top-Right": (0.95, 0.12),
+                "Bottom-Right": (0.95, 0.88),
+                "Bottom-Left": (0.05, 0.88)
+            }
+            cal_pts[pt] = default.get(pt, (0.5, 0.5))
+            print(f"Timed out capturing {pt}, using fallback {cal_pts[pt]}")
 
     cv2.destroyWindow("Calibration")
 
@@ -537,6 +577,12 @@ def main():
         return
     # assign global
     globals()['cap'] = cap_local
+    try:
+        cv2.startWindowThread()
+        cv2.namedWindow("Calibration", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("Hand-Control (backend)", cv2.WINDOW_NORMAL)
+    except Exception as e:
+        print("Warning: cv2.startWindowThread() failed or not required:", e)
 
     # MediaPipe hands
     mp_hands = mp.solutions.hands
@@ -619,19 +665,53 @@ def pyautogui_size():
 # Global thread handle
 _hand_tracking_thread = None
 
-def start_hand_tracking():
+def start_hand_tracking(hand_state: HandTrackingState = None):
     global _hand_tracking_thread
+
     if _hand_tracking_thread is None or not _hand_tracking_thread.is_alive():
-        import threading
-        _hand_tracking_thread = threading.Thread(target=main, daemon=True)
+        def runner():
+            try:
+                print("[HandTracking] Thread started")
+                if hand_state is not None:
+                    globals()['external_hand_state'] = hand_state
+
+                print("[HandTracking] Initializing camera...")
+                import cv2
+                cap = cv2.VideoCapture(0)
+                if not cap.isOpened():
+                    print("[HandTracking] ERROR: Cannot open camera! Exiting thread.")
+                    return
+                print("[HandTracking] Camera opened successfully")
+
+                # just capture a few frames for debug
+                for i in range(5):
+                    ret, frame = cap.read()
+                    if not ret:
+                        print("[HandTracking] ERROR: Failed to read frame")
+                        break
+                    print(f"[HandTracking] Captured frame {i+1}")
+                    import time; time.sleep(0.1)
+
+                cap.release()
+                print("[HandTracking] Camera released")
+                print("[HandTracking] Exiting thread (debug)")
+
+            except Exception as e:
+                print("Hand-tracking thread error:", e)
+
+        _hand_tracking_thread = threading.Thread(target=runner, daemon=True)
         _hand_tracking_thread.start()
     return _hand_tracking_thread
 
 def stop_hand_tracking():
-    from hand_tracking_backend import shutdown_flag
+    """
+    Request the hand-tracking thread to stop and wait for it.
+    """
+    global _hand_tracking_thread, shutdown_flag
     shutdown_flag.set()
     if _hand_tracking_thread:
-        _hand_tracking_thread.join()
+        _hand_tracking_thread.join(timeout=2.0)
+        _hand_tracking_thread = None
 
 if __name__ == "__main__":
     main()

@@ -16,11 +16,13 @@ class GestureLibrary:
         self.double_click_interval = 0.4
         self.last_click_time = 0
 
-    def process(self):
+    def process(self, state=None):
         """Call this every frame to execute gestures."""
         now = time.time()
 
         # PINCH / DRAG
+        if state:
+            self.state = state
         if self.state.is_pinching:
             if self.state.is_dragging:
                 try:

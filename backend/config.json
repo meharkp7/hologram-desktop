@@ -1,0 +1,22 @@
+{
+  "calibration_data": {
+    "Top-Left": [
+      0.05,
+      0.12
+    ],
+    "Top-Right": [
+      0.95,
+      0.12
+    ],
+    "Bottom-Right": [
+      0.95,
+      0.88
+    ],
+    "Bottom-Left": [
+      0.05,
+      0.88
+    ]
+  },
+  "pinch_threshold": 30,
+  "hotspots": []
+}
