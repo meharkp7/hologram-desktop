@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-backend.py - Threaded hand-tracking backend for touchless desktop control.
+hand_tracking_backend.py - Threaded hand-tracking backend for touchless desktop control.
 
 Features:
 - Exponential smoothing cursor control (low-latency)
@@ -118,10 +118,10 @@ def normalized_to_screen(nx, ny):
     return tx, ty
 
 def snap_to_hotspots(x, y):
-    if not hotspots:
+    try:
+        best = min(hotspots, key=lambda p: math.hypot(p[0]-x, p[1]-y))
+    except ValueError:
         return x, y, False
-    # choose nearest
-    best = min(hotspots, key=lambda p: math.hypot(p[0]-x, p[1]-y))
     d = math.hypot(best[0]-x, best[1]-y)
     if d < HOTSPOT_RADIUS:
         nx = x + (best[0]-x) * HOTSPOT_STRENGTH
@@ -338,6 +338,8 @@ def processing_loop(cal_points):
                     last_right_click_time = now
                     visual_hint = "Right Click"
                     last_visual_hint_time = now
+                    is_pinching = False
+                    is_dragging = False
 
             # --- SCROLL: two-finger mode (index+middle up) - vertical & horizontal
             if is_index_up and is_middle_up and not is_ring_up and not is_pinky_up:
@@ -370,7 +372,7 @@ def processing_loop(cal_points):
 
             # --- ZOOM: thumb-pinky distance based (works by sending modifier + mouse.scroll)
             # We'll convert delta of thumb-pinky into small scrolls while holding modifier (Ctrl/Cmd)
-            if dist_thumb_pinky_px > 0:
+            if dist_thumb_pinky_px > 8:
                 if not zoom_active:
                     zoom_active = True
                     zoom_base = dist_thumb_pinky_px
@@ -429,6 +431,7 @@ def processing_loop(cal_points):
                             visual_hint = "Click"
                         last_visual_hint_time = now
                         last_click_time = now
+                        is_dragging = False        
                 is_pinching = False
 
             # --- CURSOR MAPPING ---
@@ -537,6 +540,7 @@ def processing_loop(cal_points):
                 # update cal_points and threshold
                 cal_tl = new_cal.get("Top-Left", (0,0))
                 cal_br = new_cal.get("Bottom-Right", (1,1))
+                prev_x, prev_y = mouse.position
                 # update config file
                 cfg = load_config()
                 cfg["calibration_data"] = new_cal
@@ -661,74 +665,6 @@ def pyautogui_size():
     except Exception:
         # fallback hardcoded
         return 1920, 1080
-
-_hand_tracking_thread = None
-_shutdown_flag = threading.Event()
-
-def start_hand_tracking(hand_state: HandTrackingState):
-    """
-    Start the hand-tracking thread using the real camera feed.
-    Updates the provided hand_state continuously.
-    """
-    global _hand_tracking_thread
-
-    if _hand_tracking_thread is None or not _hand_tracking_thread.is_alive():
-        def runner():
-            print("[HandTracking] Thread started")
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                print("[HandTracking] ERROR: Cannot open camera! Exiting thread.")
-                return
-            print("[HandTracking] Camera opened successfully")
-
-            # Initialize hand tracking model here (MediaPipe or custom)
-            try:
-                import mediapipe as mp
-                mp_hands = mp.solutions.hands
-                hands = mp_hands.Hands(
-                    max_num_hands=2,
-                    min_detection_confidence=0.7,
-                    min_tracking_confidence=0.5
-                )
-            except ImportError:
-                print("[HandTracking] ERROR: MediaPipe not installed!")
-                cap.release()
-                return
-
-            while not _shutdown_flag.is_set():
-                ret, frame = cap.read()
-                if not ret:
-                    print("[HandTracking] ERROR: Failed to read frame")
-                    continue
-
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                result = hands.process(frame_rgb)
-
-                # Update hand_state from detection result
-                hand_state.update_from_frame(result, frame_shape=frame.shape)
-
-                time.sleep(0.01)  # small delay for CPU relief
-
-            cap.release()
-            hands.close()
-            print("[HandTracking] Camera released, thread exiting")
-
-        _hand_tracking_thread = threading.Thread(target=runner, daemon=True)
-        _hand_tracking_thread.start()
-
-    return _hand_tracking_thread
-
-
-def stop_hand_tracking():
-    global _shutdown_flag
-    print("[HandTracking] Shutting down thread...")
-    _shutdown_flag.set()
-    global _hand_tracking_thread
-    if _hand_tracking_thread:
-        _hand_tracking_thread.join(timeout=2)
-        _hand_tracking_thread = None
-    _shutdown_flag.clear()
-    print("[HandTracking] Thread stopped")
 
 if __name__ == "__main__":
     main()
