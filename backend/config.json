@@ -1,22 +1,15 @@
 {
-  "calibration_data": {
-    "Top-Left": [
-      0.05,
-      0.12
-    ],
-    "Top-Right": [
-      0.95,
-      0.12
-    ],
-    "Bottom-Right": [
-      0.95,
-      0.88
-    ],
-    "Bottom-Left": [
-      0.05,
-      0.88
-    ]
-  },
   "pinch_threshold": 30,
-  "hotspots": []
+  "hotspots": [],
+  "calibration_data": {
+    "Top-Left": [0.05, 0.12],
+    "Top-Right": [0.95, 0.12],
+    "Bottom-Right": [0.95, 0.88],
+    "Bottom-Left": [0.05, 0.88]
+  },
+  "gesture_actions": {
+    "PALM_LEFT": "switch_prev",
+    "PALM_RIGHT": "switch_next",
+    "L_LOCK": "lock_screen"
+  }
 }

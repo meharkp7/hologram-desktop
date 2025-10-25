@@ -91,6 +91,9 @@ hotspots = []
 pinch_threshold = DEFAULT_PINCH_THRESHOLD
 prev_hand_centers = {} 
 gesture_hints = []
+last_palm_gesture_time = 0.0
+PALM_GESTURE_COOLDOWN = 0.7
+
 # ------------------------
 # Utility functions
 # ------------------------
@@ -148,6 +151,55 @@ def capture_thread():
         # tiny sleep allows other thread to run
         time.sleep(0.001)
     # end capture
+
+def perform_gesture_action(gesture_name):
+    cfg = load_config()
+    action = cfg.get("gesture_actions", {}).get(gesture_name)
+    if not action:
+        return
+
+    try:
+        sys_platform = platform.system().lower()
+
+        if action == "switch_next":
+            if sys_platform.startswith("win"):
+                # Alt+Tab simulation
+                from pynput.keyboard import Key, Controller
+                kb = Controller()
+                kb.press(Key.alt)
+                kb.press(Key.tab)
+                kb.release(Key.tab)
+                kb.release(Key.alt)
+            elif sys_platform.startswith("darwin"):
+                os.system('osascript -e \'tell application "System Events" to key code 48 using {command down}\'')
+            else:  # Linux Gnome/KDE
+                os.system('xdotool key alt+Tab')
+
+        elif action == "switch_prev":
+            if sys_platform.startswith("win"):
+                from pynput.keyboard import Key, Controller
+                kb = Controller()
+                kb.press(Key.alt)
+                kb.press(Key.shift)
+                kb.press(Key.tab)
+                kb.release(Key.tab)
+                kb.release(Key.shift)
+                kb.release(Key.alt)
+            elif sys_platform.startswith("darwin"):
+                os.system('osascript -e \'tell application "System Events" to key code 48 using {shift down, command down}\'')
+            else:
+                os.system('xdotool key alt+Shift+Tab')
+
+        elif action == "lock_screen":
+            if sys_platform.startswith("win"):
+                os.system("rundll32.exe user32.dll,LockWorkStation")
+            elif sys_platform.startswith("darwin"):
+                os.system("pmset displaysleepnow")
+            else:
+                os.system("gnome-screensaver-command -l")
+
+    except Exception as e:
+        print(f"Failed to perform gesture action {gesture_name}: {e}")
 
 # ------------------------
 # Calibration routine
@@ -338,6 +390,14 @@ def processing_loop(cal_points):
                 if abs(dx) > 0.15:
                     direction = "PALM_LEFT" if dx < 0 else "PALM_RIGHT"
                     gesture_hints.append(f"{direction} Swipe (Hand {hand_idx+1})")
+                    perform_gesture_action(direction) 
+                    action = cfg.get("gesture_actions", {}).get(direction)
+                    if action == "switch_prev":
+                        # implement your app-switching logic here
+                        print("Action: switch to previous app")
+                    elif action == "switch_next":
+                        print("Action: switch to next app")
+                    last_palm_gesture_time = now
 
                 # --- Gesture detection per hand ---
                 if is_index_up and is_middle_up and is_ring_up and dist_thumb_index_px < pinch_threshold*1.15:
@@ -422,6 +482,7 @@ def processing_loop(cal_points):
             if is_index_up and (thumb.y < lm.landmark[2].y) and not is_middle_up and not is_ring_up and not is_pinky_up:
                 visual_hint = "L Gesture → Lock Screen"
                 last_visual_hint_time = now
+                perform_gesture_action("L_LOCK")
                 # trigger action: lock screen (cross-platform)
                 import subprocess
                 try:
