@@ -50,3 +50,10 @@ def average(lst):
 def midpoint(p1, p2):
     """Return midpoint between two points"""
     return ((p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0)
+
+def is_hand_resting(prev_point, current_point, threshold=5):
+    if not prev_point:
+        return False
+    dx = abs(current_point[0] - prev_point[0])
+    dy = abs(current_point[1] - prev_point[1])
+    return math.hypot(dx, dy) < threshold

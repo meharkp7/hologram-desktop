@@ -89,7 +89,8 @@ zoom_base = 0.0
 current_zoom_percent = 100  # purely visual
 hotspots = []
 pinch_threshold = DEFAULT_PINCH_THRESHOLD
-
+prev_hand_centers = {} 
+gesture_hints = []
 # ------------------------
 # Utility functions
 # ------------------------
@@ -187,7 +188,7 @@ def calibrate_interactive(timeout_per_point=10.0):
             results = hands.process(rgb)
             key = cv2.waitKey(1) & 0xFF
 
-            if results.multi_hand_landmarks:
+            if results and results.multi_hand_landmarks:
                 lm = results.multi_hand_landmarks[0]
                 index = lm.landmark[8]
                 thumb = lm.landmark[4]
@@ -290,6 +291,8 @@ def processing_loop(cal_points):
             time.sleep(0.005)
             continue
 
+        gesture_hints = []
+
         fh, fw = frame.shape[:2]
         display = frame.copy()
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
@@ -298,38 +301,56 @@ def processing_loop(cal_points):
 
         is_hand_present = False
 
-        if results.multi_hand_landmarks:
+        if results and results.multi_hand_landmarks:
             is_hand_present = True
             last_input_time = now
 
-            # We only care about the first detected hand for primary controls
-            lm = results.multi_hand_landmarks[0]
-            mp_draw.draw_landmarks(display, lm, mp.solutions.hands.HAND_CONNECTIONS)
+            # Loop over all detected hands
+            for hand_idx, lm in enumerate(results.multi_hand_landmarks):
+                mp_draw.draw_landmarks(display, lm, mp.solutions.hands.HAND_CONNECTIONS)
 
-            # fingertip landmarks
-            thumb = lm.landmark[4]
-            index = lm.landmark[8]
-            middle = lm.landmark[12]
-            ring = lm.landmark[16]
-            pinky = lm.landmark[20]
+                thumb = lm.landmark[4]
+                index = lm.landmark[8]
+                middle = lm.landmark[12]
+                ring = lm.landmark[16]
+                pinky = lm.landmark[20]
 
-            # compute pixel positions in camera frame
-            ix_px = int(index.x * fw)
-            iy_px = int(index.y * fh)
-            tx_px = int(thumb.x * fw)
-            ty_px = int(thumb.y * fh)
-            pinkx_px = int(pinky.x * fw)
-            pinky_px = int(pinky.y * fh)
+                # Compute pixel positions
+                ix_px, iy_px = int(index.x*fw), int(index.y*fh)
+                tx_px, ty_px = int(thumb.x*fw), int(thumb.y*fh)
+                pinkx_px, pinky_px = int(pinky.x*fw), int(pinky.y*fh)
 
-            # pixel distances for pinch and zoom detection
-            dist_thumb_index_px = pixel_distance((tx_px, ty_px), (ix_px, iy_px))
-            dist_thumb_pinky_px = pixel_distance((tx_px, ty_px), (pinkx_px, pinky_px))
+                dist_thumb_index_px = pixel_distance((tx_px, ty_px), (ix_px, iy_px))
+                dist_thumb_pinky_px = pixel_distance((tx_px, ty_px), (pinkx_px, pinky_px))
 
-            # finger 'up' heuristics (relative to finger base)
-            is_index_up = index.y < lm.landmark[5].y
-            is_middle_up = middle.y < lm.landmark[9].y
-            is_ring_up = ring.y < lm.landmark[13].y
-            is_pinky_up = pinky.y < lm.landmark[17].y
+                # Determine fingers up
+                is_index_up = index.y < lm.landmark[5].y
+                is_middle_up = middle.y < lm.landmark[9].y
+                is_ring_up = ring.y < lm.landmark[13].y
+                is_pinky_up = pinky.y < lm.landmark[17].y
+
+                # Store current hand center (for swipe detection)
+                # --- Palm swipe sideways (task switcher) ---
+                hand_center_x = (lm.landmark[0].x + lm.landmark[9].x)/2
+                prev_x_center = prev_hand_centers.get(hand_idx, hand_center_x)
+                dx = hand_center_x - prev_x_center
+                prev_hand_centers[hand_idx] = hand_center_x
+                if abs(dx) > 0.15:
+                    direction = "PALM_LEFT" if dx < 0 else "PALM_RIGHT"
+                    gesture_hints.append(f"{direction} Swipe (Hand {hand_idx+1})")
+
+                # --- Gesture detection per hand ---
+                if is_index_up and is_middle_up and is_ring_up and dist_thumb_index_px < pinch_threshold*1.15:
+                    gesture_hints.append(f"Right Click (Hand {hand_idx+1})")
+                elif is_index_up and is_middle_up and not is_ring_up:
+                    gesture_hints.append(f"Scroll (Hand {hand_idx+1})")
+                elif dist_thumb_pinky_px > 8:
+                    gesture_hints.append(f"Zoom (Hand {hand_idx+1})")
+                elif is_index_up and thumb.y < lm.landmark[2].y and not is_middle_up and not is_ring_up and not is_pinky_up:
+                    gesture_hints.append(f"L Gesture → Lock (Hand {hand_idx+1})")
+
+                # Visual fingertip
+                cv2.circle(display, (ix_px, iy_px), 10, (255, 0, 255), cv2.FILLED)
 
             # --- RIGHT CLICK: three-finger pinch (index+middle close and pinch present)
             if is_index_up and is_middle_up and is_ring_up and dist_thumb_index_px < pinch_threshold * 1.15:
@@ -385,7 +406,7 @@ def processing_loop(cal_points):
                         # send modifier + scroll for actual app zoom
                         keyboard.press(ZOOM_MOD_KEY)
                         # vertical scroll value: positive up -> zoom in in most browsers if ctrl+scroll up zooms in.
-                        mouse.scroll(0, int(smooth_delta))
+                        mouse.scroll(0, round(smooth_delta))
                         keyboard.release(ZOOM_MOD_KEY)
 
                         # update zoom_base gradually to make it smoother
@@ -396,6 +417,34 @@ def processing_loop(cal_points):
                         last_visual_hint_time = now
             else:
                 zoom_active = False
+
+            # --- L-SHAPE GESTURE: Index + Thumb up, others down ---
+            if is_index_up and (thumb.y < lm.landmark[2].y) and not is_middle_up and not is_ring_up and not is_pinky_up:
+                visual_hint = "L Gesture → Lock Screen"
+                last_visual_hint_time = now
+                # trigger action: lock screen (cross-platform)
+                import subprocess
+                try:
+                    sys_platform = platform.system().lower()
+                    if sys_platform.startswith("win"):
+                        os.system("rundll32.exe user32.dll,LockWorkStation")
+                    elif sys_platform.startswith("darwin"):
+                        # macOS lock using pmset (displaysleep) or AppleScript
+                        try:
+                            subprocess.run(["pmset", "displaysleepnow"])
+                        except:
+                            subprocess.run([
+                                "osascript", "-e",
+                                'tell application "System Events" to keystroke "q" using {control down, command down}'
+                            ])
+                    else:
+                        # Linux (Gnome/KDE)
+                        try:
+                            subprocess.run(["gnome-screensaver-command", "-l"])
+                        except:
+                            subprocess.run(["loginctl", "lock-session"])
+                except Exception as e:
+                    print("Failed to lock screen:", e)
 
             # --- PINCH CLICK / DRAG (left click) ---
             if dist_thumb_index_px < pinch_threshold:
@@ -464,10 +513,6 @@ def processing_loop(cal_points):
                 except Exception:
                     # if OS refused, ignore
                     pass
-
-            # visual fingertip dot
-            cv2.circle(display, (ix_px, iy_px), 10, (255, 0, 255), cv2.FILLED)
-
         else:
             # no hand
             if now - last_input_time > 1.0:
@@ -507,6 +552,10 @@ def processing_loop(cal_points):
             cam_y = int((hy / screen_h) * fh)
             cv2.circle(display, (cam_x, cam_y), 8, (0, 165, 255), 1)
 
+        if gesture_hints:
+            hint_text = " | ".join(gesture_hints)
+            cv2.putText(display, hint_text, (10, fh - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,200,0), 2)
+
         cv2.imshow("Hand-Control (backend)", display)
         key = cv2.waitKey(1) & 0xFF
         # keyboard controls
@@ -527,7 +576,6 @@ def processing_loop(cal_points):
                 mx, my = mouse.position
                 hotspots.append((int(mx), int(my)))
                 cfg = load_config()
-                cfg.setdefault("hotspots", [])
                 cfg["hotspots"] = hotspots
                 save_config(cfg)
                 print(f"Hotspot saved: {mx},{my}")
@@ -545,7 +593,7 @@ def processing_loop(cal_points):
                 cfg = load_config()
                 cfg["calibration_data"] = new_cal
                 cfg["pinch_threshold"] = new_thresh
-                cfg.setdefault("hotspots", []).extend(hotspots)
+                cfg["hotspots"] = hotspots
                 save_config(cfg)
                 print("Recalibration done.")
         elif key == ord('m'):
@@ -554,7 +602,6 @@ def processing_loop(cal_points):
                 last_input_time = 0
             else:
                 last_input_time = time.time()
-
     # cleanup
     cv2.destroyAllWindows()
 
