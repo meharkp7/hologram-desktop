@@ -29,6 +29,8 @@ import platform
 from pynput.mouse import Controller as MouseController, Button
 from pynput.keyboard import Controller as KeyboardController, Key
 from utils import HandTrackingState
+import sys
+
 # ------------------------
 # USER-TUNABLE PARAMETERS
 # ------------------------
@@ -48,8 +50,14 @@ HOTSPOT_RADIUS = 140                    # pixels to magnetize to hotspot
 HOTSPOT_STRENGTH = 0.85                 # 0..1 (how strongly to snap)
 HESITATION_HINT_TIME = 1.2              # seconds show hint if no input
 FPS_DISPLAY = True
+PALM_GESTURE_COOLDOWN = 0.7
 
 CONFIG_PATH = "config.json"
+
+AUTO_SLEEP_TIMEOUT = 6.0         # seconds of no hands -> go to auto-sleep
+REST_MOVE_THRESHOLD_PX = 6.0     # average movement (px) below this = desk rest
+REST_WINDOW_FRAMES = 8          # number of recent frames to average
+REST_TIME = 0.8                  # seconds of small movement to treat as resting
 
 # ------------------------
 # PLATFORM MODIFIER
@@ -65,10 +73,10 @@ else:
 # ------------------------
 mouse = MouseController()
 keyboard = KeyboardController()
+mp_draw = mp.solutions.drawing_utils
+hands = mp.solutions.hands.Hands(max_num_hands=2, min_detection_confidence=0.6)
 
 cap = None
-hands = None
-mp_draw = None
 
 frame_lock = threading.Lock()
 _latest_frame = None
@@ -92,8 +100,9 @@ pinch_threshold = DEFAULT_PINCH_THRESHOLD
 prev_hand_centers = {} 
 gesture_hints = []
 last_palm_gesture_time = 0.0
-PALM_GESTURE_COOLDOWN = 0.7
-
+auto_sleeping = False
+_rest_movement_buffer = []      
+_last_significant_move_time = time.time()
 # ------------------------
 # Utility functions
 # ------------------------
@@ -310,10 +319,11 @@ def calibrate_interactive(timeout_per_point=10.0):
 # ------------------------
 # Processing loop (main)
 # ------------------------
-def processing_loop(cal_points):
+def processing_loop(cal_points, cfg):
     global prev_x, prev_y, last_input_time
     global is_pinching, pinch_start_time, last_click_time, is_dragging
     global last_right_click_time, last_scroll_pos, zoom_active, zoom_base, current_zoom_percent
+    global prev_hand_centers, gesture_hints, last_palm_gesture_time
 
     # map calibration normalized to use when mapping finger coords: we just use cal_tl and cal_br for scaling
     cal_tl = cal_points.get("Top-Left")
@@ -370,10 +380,10 @@ def processing_loop(cal_points):
                 # Compute pixel positions
                 ix_px, iy_px = int(index.x*fw), int(index.y*fh)
                 tx_px, ty_px = int(thumb.x*fw), int(thumb.y*fh)
-                pinkx_px, pinky_px = int(pinky.x*fw), int(pinky.y*fh)
+                px_px, py_px = int(pinky.x*fw), int(pinky.y*fh)
 
                 dist_thumb_index_px = pixel_distance((tx_px, ty_px), (ix_px, iy_px))
-                dist_thumb_pinky_px = pixel_distance((tx_px, ty_px), (pinkx_px, pinky_px))
+                dist_thumb_pinky_px = pixel_distance((tx_px, ty_px), (px_px, py_px))
 
                 # Determine fingers up
                 is_index_up = index.y < lm.landmark[5].y
@@ -389,15 +399,17 @@ def processing_loop(cal_points):
                 prev_hand_centers[hand_idx] = hand_center_x
                 if abs(dx) > 0.15:
                     direction = "PALM_LEFT" if dx < 0 else "PALM_RIGHT"
-                    gesture_hints.append(f"{direction} Swipe (Hand {hand_idx+1})")
-                    perform_gesture_action(direction) 
-                    action = cfg.get("gesture_actions", {}).get(direction)
-                    if action == "switch_prev":
-                        # implement your app-switching logic here
-                        print("Action: switch to previous app")
-                    elif action == "switch_next":
-                        print("Action: switch to next app")
-                    last_palm_gesture_time = now
+                    if now - last_palm_gesture_time > PALM_GESTURE_COOLDOWN:
+                        gesture_hints.append(f"{direction} Swipe (Hand {hand_idx+1})")
+                        perform_gesture_action(direction)
+                        action = cfg.get("gesture_actions", {}).get(direction)
+                        if action == "switch_prev":
+                            print("Action: switch to previous app")
+                        elif action == "switch_next":
+                            print("Action: switch to next app")
+                        last_palm_gesture_time = now
+                    else:
+                        pass
 
                 # --- Gesture detection per hand ---
                 if is_index_up and is_middle_up and is_ring_up and dist_thumb_index_px < pinch_threshold*1.15:
@@ -733,7 +745,7 @@ def main():
     t.start()
 
     try:
-        processing_loop(cal_data)
+        processing_loop(cal_data, cfg)
     except KeyboardInterrupt:
         pass
     finally:
