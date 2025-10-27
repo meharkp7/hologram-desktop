@@ -1,85 +1,196 @@
 #!/usr/bin/env python3
+import cv2
+import threading
 import time
-import pyautogui
-from hand_tracking_backend import processing_loop
+import platform
+from hand_tracking_backend import (
+    capture_thread,
+    load_config,
+    save_config,
+    calibrate_interactive,
+    hotspots,
+    pinch_threshold,
+    _latest_frame,
+    screen_w,
+    screen_h,
+    last_hand_position,
+    is_pinching
+)
+import hand_tracking_backend as htb
+from ai_keyboard import AirKeyboard
 
-class CursorController:
-    def __init__(self, smoothing=5):
-        self.smoothing = smoothing
-        self.prev_x = 0
-        self.prev_y = 0
-        self.dragging = False
-        self.prev_pinch_distance = None
+keyboard = AirKeyboard()
+keyboard_visible = False
 
-    def move_cursor(self, x, y):
-        smoothed_x = self.prev_x + (x - self.prev_x) / self.smoothing
-        smoothed_y = self.prev_y + (y - self.prev_y) / self.smoothing
-        pyautogui.moveTo(smoothed_x, smoothed_y)
-        if self.dragging:
-            pyautogui.dragTo(smoothed_x, smoothed_y, duration=0.01, button='left')
-        self.prev_x, self.prev_y = smoothed_x, smoothed_y
+# --- Camera detection ---
+def detect_camera():
+    system = platform.system().lower()
+    backends = {
+        "darwin": [cv2.CAP_AVFOUNDATION, cv2.CAP_QT, cv2.CAP_ANY],
+        "linux": [cv2.CAP_V4L2, cv2.CAP_ANY],
+        "windows": [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+    }.get(system, [cv2.CAP_ANY])
 
-    def click(self):
-        pyautogui.click()
+    for backend in backends:
+        for idx in range(5):
+            cap_test = cv2.VideoCapture(idx, backend)
+            if cap_test.isOpened():
+                cap_test.release()
+                return idx, backend
+    return None, None
 
-    def right_click(self):
-        pyautogui.click(button='right')
+# --- Draw overlays ---
+def draw_overlay(frame):
+    h, w, _ = frame.shape
+    # Draw hotspots
+    for hx, hy, hr in hotspots:
+        cv2.circle(frame, (int(hx*w), int(hy*h)), int(hr*min(w,h)), (0,255,0), 2)
+    # Draw pinch threshold
+    cv2.line(frame, (0,int(pinch_threshold*h)), (w,int(pinch_threshold*h)), (255,0,0), 1)
+    # Draw keyboard toggle button bottom-right
+    btn_w, btn_h = 120, 50
+    cv2.rectangle(frame, (w-btn_w-20,h-btn_h-20), (w-20,h-20), (50,50,50), -1)
+    cv2.putText(frame, "Keyboard", (w-btn_w-15,h-35), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255),2)
 
-    def scroll(self, amount):
-        pyautogui.scroll(amount)
+# --- Toggle button click ---
+def check_keyboard_toggle(x, y, frame_w, frame_h):
+    global keyboard_visible
+    btn_w, btn_h = 120, 50
+    if frame_w-btn_w-20 <= x <= frame_w-20 and frame_h-btn_h-20 <= y <= frame_h-20:
+        keyboard_visible = not keyboard_visible
 
-    def start_drag(self):
-        self.dragging = True
-        pyautogui.mouseDown()
+# --- Draw AI keyboard ---
+def draw_keyboard(frame):
+    keys = list("QWERTYUIOPASDFGHJKLZXCVBNM")
+    key_w, key_h = 60, 60
+    start_x, start_y = 50, frame.shape[0]-250
+    for i, key in enumerate(keys):
+        row, col = 0, i
+        if i >= 10 and i < 19:
+            row, col = 1, i-10
+        elif i >= 19:
+            row, col = 2, i-19
+        x, y = start_x + col*(key_w+10), start_y + row*(key_h+10)
+        cv2.rectangle(frame, (x,y), (x+key_w,y+key_h), (100,100,100), -1)
+        cv2.putText(frame, key, (x+15,y+40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
 
-    def stop_drag(self):
-        self.dragging = False
-        pyautogui.mouseUp()
+# --- Check finger press ---
+def check_key_press(finger_pos, frame):
+    if finger_pos is None:
+        return None
+    x, y = finger_pos
+    keys = list("QWERTYUIOPASDFGHJKLZXCVBNM")
+    key_w, key_h = 60, 60
+    start_x, start_y = 50, frame.shape[0]-250
+    for i, key in enumerate(keys):
+        row, col = 0, i
+        if i >= 10 and i < 19:
+            row, col = 1, i-10
+        elif i >= 19:
+            row, col = 2, i-19
+        kx, ky = start_x + col*(key_w+10), start_y + row*(key_h+10)
+        if kx <= x <= kx+key_w and ky <= y <= ky+key_h:
+            return key
+    return None
 
-    def pinch_zoom(self, distance):
-        if self.prev_pinch_distance is None:
-            self.prev_pinch_distance = distance
-            return
-        delta = distance - self.prev_pinch_distance
-        if abs(delta) > 5:  # threshold to avoid jitter
-            self.scroll(int(delta))
-        self.prev_pinch_distance = distance
-
-
+# --- Main ---
 def main():
-    cursor = CursorController()
-    print("Starting gesture fusion with pinch-drag and pinch-zoom... Press Ctrl+C to exit.")
+    global keyboard_visible, keyboard
 
-    def gesture_callback(gesture_name, x, y, extra=None):
-        if gesture_name == "pinch":
-            cursor.click()
-        elif gesture_name == "pinch_hold":
-            cursor.start_drag()
-        elif gesture_name == "pinch_release":
-            cursor.stop_drag()
-        elif gesture_name == "swipe":
-            cursor.move_cursor(x, y)
-        elif gesture_name == "three_finger_pinch":
-            cursor.right_click()
-        elif gesture_name == "two_finger_swipe_up":
-            cursor.scroll(100)
-        elif gesture_name == "two_finger_swipe_down":
-            cursor.scroll(-100)
-        elif gesture_name == "two_finger_pinch" and extra is not None:
-            cursor.pinch_zoom(extra)  # extra should be the distance between fingers
-
-    cfg = {
-        "model_path": "hand_model.tflite",
-        "camera_id": 0,
-        "mirror": True,
-        "max_num_hands": 1
-    }
-
+    # Screen size
     try:
-        processing_loop(cfg, gesture_callback)
-    except KeyboardInterrupt:
-        print("Exiting gesture fusion.")
+        from hand_tracking_backend import pyautogui_size
+        w, h = pyautogui_size()
+        htb.screen_w, htb.screen_h = w, h
+    except Exception:
+        htb.screen_w, htb.screen_h = 1920, 1080
 
+    # Detect camera
+    camera_index, backend = detect_camera()
+    if camera_index is None:
+        print("ERROR: No camera found.")
+        return
+    print(f"Using camera {camera_index} with backend {backend}")
+    htb.cap = cv2.VideoCapture(camera_index, backend)
+    htb.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    htb.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    if not htb.cap.isOpened():
+        print("ERROR: Camera could not be opened.")
+        return
+
+    # OpenCV window
+    cv2.startWindowThread()
+    cv2.namedWindow("Hand-Control Overlay", cv2.WINDOW_NORMAL)
+
+    # Load config
+    cfg = load_config()
+    cal_data = cfg.get("calibration_data")
+    if cfg.get("pinch_threshold"):
+        htb.pinch_threshold = cfg["pinch_threshold"]
+    if cfg.get("hotspots"):
+        htb.hotspots.extend(cfg["hotspots"])
+
+    # Calibration
+    if not cal_data:
+        cal_data, computed = calibrate_interactive()
+        if cal_data:
+            cfg["calibration_data"] = cal_data
+            cfg["pinch_threshold"] = computed
+            cfg.setdefault("hotspots", []).extend(hotspots)
+            save_config(cfg)
+        else:
+            print("Calibration aborted; exiting.")
+            return
+
+    # Start capture thread
+    t = threading.Thread(target=capture_thread, daemon=True)
+    t.start()
+
+    # Main loop
+    try:
+        while True:
+            if _latest_frame is not None:
+                frame = _latest_frame.copy()
+                h, w, _ = frame.shape
+
+                # Draw gestures & toggle button
+                draw_overlay(frame)
+
+                # Mouse callback
+                def mouse_cb(event, x, y, flags, param):
+                    if event == cv2.EVENT_LBUTTONDOWN:
+                        check_keyboard_toggle(x, y, w, h)
+                cv2.setMouseCallback("Hand-Control Overlay", mouse_cb)
+
+                # Keyboard overlay
+                if keyboard_visible:
+                    draw_keyboard(frame)
+                    finger = last_hand_position()
+                    pinch = is_pinching()
+                    if finger and pinch:
+                        key = check_key_press(finger, frame)
+                        if key:
+                            keyboard.key_pressed(key)
+
+                    # Display typed text
+                    cv2.rectangle(frame, (50,50), (w-50,120), (30,30,30), -1)
+                    cv2.putText(frame, keyboard.typed_text, (60,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255),2)
+
+                cv2.imshow("Hand-Control Overlay", frame)
+                if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
+                    break
+            else:
+                time.sleep(0.01)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if htb.cap:
+            htb.cap.release()
+        cv2.destroyAllWindows()
+        cfg["hotspots"] = htb.hotspots
+        cfg["pinch_threshold"] = htb.pinch_threshold
+        save_config(cfg)
+        print("Shutdown complete.")
 
 if __name__ == "__main__":
     main()
