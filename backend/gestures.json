@@ -1,0 +1,33 @@
+{
+    "gestures": [
+      {
+        "name": "swipe_left",
+        "type": "swipe",
+        "direction": "left",
+        "threshold": 50
+      },
+      {
+        "name": "swipe_right",
+        "type": "swipe",
+        "direction": "right",
+        "threshold": 50
+      },
+      {
+        "name": "pinch",
+        "type": "hand_shape",
+        "fingers": ["thumb", "index"],
+        "threshold": 0.02
+      },
+      {
+        "name": "hover",
+        "type": "position",
+        "duration_ms": 300
+      },
+      {
+        "name": "tap",
+        "type": "tap",
+        "threshold": 0.03
+      }
+    ]
+  }
+  
