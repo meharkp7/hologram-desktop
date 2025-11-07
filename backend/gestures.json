@@ -1,33 +1,69 @@
 {
-    "gestures": [
-      {
-        "name": "swipe_left",
-        "type": "swipe",
-        "direction": "left",
-        "threshold": 50
-      },
-      {
-        "name": "swipe_right",
-        "type": "swipe",
-        "direction": "right",
-        "threshold": 50
-      },
-      {
-        "name": "pinch",
-        "type": "hand_shape",
-        "fingers": ["thumb", "index"],
-        "threshold": 0.02
-      },
-      {
-        "name": "hover",
-        "type": "position",
-        "duration_ms": 300
-      },
-      {
-        "name": "tap",
-        "type": "tap",
-        "threshold": 0.03
-      }
-    ]
-  }
-  
+  "gestures": [
+    {
+      "name": "swipe_left",
+      "type": "swipe",
+      "direction": "left",
+      "threshold": 50,
+      "action": "switch_prev"
+    },
+    {
+      "name": "swipe_right",
+      "type": "swipe",
+      "direction": "right",
+      "threshold": 50,
+      "action": "switch_next"
+    },
+    {
+      "name": "pinch",
+      "type": "hand_shape",
+      "fingers": ["thumb", "index"],
+      "threshold": 0.02,
+      "action": "left_click"
+    },
+    {
+      "name": "three_finger_pinch",
+      "type": "hand_shape",
+      "fingers": ["thumb", "index", "middle"],
+      "threshold": 0.02,
+      "action": "right_click"
+    },
+    {
+      "name": "hover",
+      "type": "position",
+      "duration_ms": 300,
+      "action": "scroll"
+    },
+    {
+      "name": "tap",
+      "type": "tap",
+      "threshold": 0.03,
+      "action": "zoom"
+    },
+    {
+      "name": "lock_gesture",
+      "type": "gesture",
+      "action": "lock_screen"
+    },
+    {
+      "name": "keyboard_show",
+      "type": "gesture",
+      "action": "keyboard_show"
+    },
+    {
+      "name": "keyboard_hide",
+      "type": "gesture",
+      "action": "keyboard_hide"
+    },
+    {
+      "name": "keyboard_toggle",
+      "type": "gesture",
+      "action": "keyboard_toggle"
+    },
+    {
+      "name": "keyboard_key_press",
+      "type": "gesture",
+      "action": "keyboard_key_press"
+    }
+  ]
+}
