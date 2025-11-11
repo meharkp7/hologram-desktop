@@ -1,389 +1,380 @@
 #!/usr/bin/env python3
 """
 gesture_system.py
-- Single-process, single-GUI event loop integration of MediaPipe/OpenCV + PyQt5 AirKeyboard.
-- Camera feed rendered inside a QLabel; gesture detection runs on each frame.
-- Toggle keyboard via floating button OR raising Index + Little finger.
-- Keeps many gesture features from your backend (pinch click/drag, three-finger right click,
-  two-finger scroll, thumb-pinky zoom, palm swipe for app switch, L-gesture lock).
+- Launches hand_tracking_backend.py in a separate process (backend keeps its main thread).
+- Runs the AirKeyboard Qt UI in THIS process (main thread).
+- Watches gesture_events.json (written by backend) and dispatches mapped actions.
+- Adds a HUD window and gesture priority resolution.
 """
 
+import os
 import sys
+import json
 import time
-import math
 import platform
+import subprocess
+import threading
 from pathlib import Path
+from collections import defaultdict
 
-# Qt / UI
+# UI / keyboard imports (must run in main thread)
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QWidget
+    QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QHBoxLayout, QFrame
 )
-from PyQt5.QtCore import Qt, QTimer, QRect
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt, QTimer
 
-# OpenCV / MediaPipe
-import cv2
-import mediapipe as mp
-import numpy as np
+# local keyboard UI
+from ai_keyboard import AirKeyboard
 
-# Input control
+# input control for actions
 from pynput.mouse import Controller as MouseController, Button
 from pynput.keyboard import Controller as KeyboardController, Key
 
-# AirKeyboard UI from your ai_keyboard.py
-from ai_keyboard import AirKeyboard
+ROOT = Path(__file__).resolve().parent
+HAND_BACKEND = ROOT / "hand_tracking_backend.py"
+GESTURE_EVENTS = ROOT / "gesture_events.json"
+GESTURE_CONFIG = ROOT / "gestures.json"
+BACKEND_PY = sys.executable
 
-# ---- Parameters ----
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
-TIMER_MS = 30  # ~33 FPS
-PINCH_PIXEL_THRESH = 30
-SCROLL_SENSITIVITY = 1.8
-HZOOM_SENSITIVITY = 0.02
-DOUBLE_CLICK_INTERVAL = 0.40
-RIGHT_CLICK_COOLDOWN = 0.5
-PALM_SWIPE_COOLDOWN = 0.7
-
-# platform modifier for zoom
-_system = platform.system().lower()
-if "darwin" in _system:
-    ZOOM_MOD_KEY = Key.cmd
-else:
-    ZOOM_MOD_KEY = Key.ctrl
-
-# ---- Global helpers ----
 mouse = MouseController()
 keyboard = KeyboardController()
 
-def clamp(v, a, b): return max(a, min(b, v))
-def pixel_dist(a, b): return math.hypot(a[0]-b[0], a[1]-b[1])
+# ---- Priority map: higher number = higher priority ----
+# You can edit or extend this on the fly via gestures.json (see load_gesture_map)
+DEFAULT_PRIORITY = {
+    # high-level explicit gestures
+    "three_finger_pinch": 95,
+    "pinch": 90,
+    "tap": 60,
+    "hover": 40,
+    "swipe_left": 70,
+    "swipe_right": 70,
+    "lock_gesture": 100,
+    # special toggle
+    "index_pinky": 85,
+    # palm swipes
+    "PALM_LEFT": 75,
+    "PALM_RIGHT": 75,
+}
 
-# ---- GestureAction mapping (you can edit gestures.json instead if you want later) ----
+# Default gesture -> action fallback map if gestures.json missing
+BUILTIN_ACTIONS = {
+    "swipe_left": "switch_prev",
+    "swipe_right": "switch_next",
+    "pinch": "left_click",
+    "three_finger_pinch": "right_click",
+    "hover": "scroll",
+    "tap": "zoom",
+    "lock_gesture": "lock_screen",
+    # custom mapping for index+pinky to toggle keyboard
+    "index_pinky": "keyboard_toggle",
+    # palm labels (from backend processing, keep for compatibility)
+    "PALM_LEFT": "switch_prev",
+    "PALM_RIGHT": "switch_next",
+}
+
+# helper: read gestures.json mapping and optional priority overrides
+def load_gesture_map_and_priority():
+    gmap = {}
+    priority = DEFAULT_PRIORITY.copy()
+    if GESTURE_CONFIG.exists():
+        try:
+            raw = json.loads(GESTURE_CONFIG.read_text(encoding="utf-8"))
+            for g in raw.get("gestures", []):
+                name = g.get("name")
+                action = g.get("action")
+                pr = g.get("priority")
+                if name and action:
+                    gmap[name] = action
+                if name and isinstance(pr, (int, float)):
+                    priority[name] = int(pr)
+        except Exception:
+            pass
+    # merge builtin actions for any missing mapping keys
+    for k, v in BUILTIN_ACTIONS.items():
+        gmap.setdefault(k, v)
+    return gmap, priority
+
+# perform OS-level actions (switch, lock, clicks, scroll, zoom)
 def perform_action(action_name):
+    sys_platform = platform.system().lower()
     try:
-        sys_pl = platform.system().lower()
         if action_name == "switch_next":
-            if sys_pl.startswith("win"):
+            if sys_platform.startswith("win"):
                 keyboard.press(Key.alt); keyboard.press(Key.tab)
                 keyboard.release(Key.tab); keyboard.release(Key.alt)
-            elif sys_pl.startswith("darwin"):
-                # macOS app switch (Cmd+Tab)
-                import subprocess
-                subprocess.run(['osascript', '-e', 'tell application "System Events" to key code 48 using {command down}'])
+            elif sys_platform.startswith("darwin"):
+                os.system('osascript -e \'tell application "System Events" to key code 48 using {command down}\'')
             else:
-                import os; os.system('xdotool key alt+Tab')
+                os.system('xdotool key alt+Tab')
+
         elif action_name == "switch_prev":
-            if sys_pl.startswith("win"):
+            if sys_platform.startswith("win"):
                 keyboard.press(Key.alt); keyboard.press(Key.shift); keyboard.press(Key.tab)
                 keyboard.release(Key.tab); keyboard.release(Key.shift); keyboard.release(Key.alt)
-            elif sys_pl.startswith("darwin"):
-                import subprocess
-                subprocess.run(['osascript', '-e', 'tell application "System Events" to key code 48 using {shift down, command down}'])
+            elif sys_platform.startswith("darwin"):
+                os.system('osascript -e \'tell application "System Events" to key code 48 using {shift down, command down}\'')
             else:
-                import os; os.system('xdotool key alt+Shift+Tab')
+                os.system('xdotool key alt+Shift+Tab')
+
         elif action_name == "lock_screen":
-            if sys_pl.startswith("win"):
-                import os; os.system("rundll32.exe user32.dll,LockWorkStation")
-            elif sys_pl.startswith("darwin"):
-                import os; os.system("pmset displaysleepnow")
+            if sys_platform.startswith("win"):
+                os.system("rundll32.exe user32.dll,LockWorkStation")
+            elif sys_platform.startswith("darwin"):
+                os.system("pmset displaysleepnow")
             else:
-                import os; os.system("gnome-screensaver-command -l")
+                os.system("gnome-screensaver-command -l")
+
         elif action_name == "left_click":
             mouse.click(Button.left, 1)
         elif action_name == "right_click":
             mouse.click(Button.right, 1)
         elif action_name == "scroll":
             mouse.scroll(0, 5)
-        elif action_name == "zoom_in":
-            keyboard.press(ZOOM_MOD_KEY); keyboard.press('+'); keyboard.release('+'); keyboard.release(ZOOM_MOD_KEY)
+        elif action_name == "zoom":
+            keyboard.press(Key.ctrl); keyboard.press('+'); keyboard.release('+'); keyboard.release(Key.ctrl)
+        else:
+            # allow numeric scroll or other commands in future
+            pass
     except Exception as e:
         print("perform_action error:", e)
 
-# ---- Main Window with Video Feed ----
-class CameraWidget(QLabel):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(FRAME_WIDTH, FRAME_HEIGHT)
-        self.setStyleSheet("background: black;")
-        self.setAlignment(Qt.AlignCenter)
+class GestureWatcher(threading.Thread):
+    """Poll gesture_events.json (written by backend) and dispatch gestures with priority."""
+    def __init__(self, keyboard_ui, polling=0.12):
+        super().__init__(daemon=True)
+        self.keyboard_ui = keyboard_ui
+        self.polling = polling
+        self._stop = threading.Event()
+        self._last_seen = {}  # gesture -> timestamp when we processed it
+        self.gmap, self.priority = load_gesture_map_and_priority()
 
-class GestureSystemWindow(QMainWindow):
-    def __init__(self):
+        # freshness TTL for events (seconds) — allows retrigger after TTL
+        self._ttl = 1.2
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        print("👀 Watching for gestures (gesture_events.json)...")
+        while not self._stop.is_set():
+            try:
+                # reload mapping live in case file edited
+                self.gmap, self.priority = load_gesture_map_and_priority()
+
+                if GESTURE_EVENTS.exists():
+                    raw = GESTURE_EVENTS.read_text(encoding="utf-8")
+                    try:
+                        events = json.loads(raw)
+                    except Exception:
+                        events = []
+                    # support older formats where events may be dict
+                    if isinstance(events, dict):
+                        events = events.get("events", []) or []
+                    # events might be list of names (strings)
+                    if not isinstance(events, list):
+                        events = [events]
+
+                    # dedupe and pick highest-priority gestures appearing simultaneously
+                    now = time.time()
+                    unique = list(dict.fromkeys([str(e) for e in events if isinstance(e, (str, int))]))
+                    if not unique:
+                        time.sleep(self.polling)
+                        continue
+
+                    # Filter by TTL (we allow reprocessing after TTL)
+                    candidates = []
+                    for g in unique:
+                        last_t = self._last_seen.get(g, 0.0)
+                        if now - last_t > self._ttl:
+                            candidates.append(g)
+
+                    if not candidates:
+                        time.sleep(self.polling)
+                        continue
+
+                    # Determine highest priority among candidates (if multiple)
+                    def pr_for(gesture_name):
+                        return int(self.priority.get(gesture_name, DEFAULT_PRIORITY.get(gesture_name, 10)))
+
+                    candidates_sorted = sorted(candidates, key=lambda x: pr_for(x), reverse=True)
+                    # process in priority order but allow short-circuit: if a high-prio gesture triggers toggle/show/hide,
+                    # we don't want lower-priority gestures immediately after to conflict.
+                    for gesture_name in candidates_sorted:
+                        # mark processed timestamp immediately (prevents retrigger until TTL)
+                        self._last_seen[gesture_name] = now
+
+                        action = self.gmap.get(gesture_name)
+                        if not action:
+                            # fallback: some backends may emit "PALM_LEFT"/"PALM_RIGHT"
+                            action = BUILTIN_ACTIONS.get(gesture_name)
+
+                        if not action:
+                            # if no known action, ignore
+                            print(f"Unknown gesture (ignored): {gesture_name}")
+                            continue
+
+                        # handle keyboard actions inside UI (must call UI thread methods)
+                        if action == "keyboard_toggle":
+                            # toggle the keyboard in UI thread
+                            print(f"Gesture -> keyboard_toggle ({gesture_name})")
+                            # call UI-safe toggle via Qt event loop
+                            self.keyboard_ui.toggle_from_thread()
+                        elif action == "keyboard_show":
+                            print(f"Gesture -> keyboard_show ({gesture_name})")
+                            self.keyboard_ui.show_keyboard_from_thread()
+                        elif action == "keyboard_hide":
+                            print(f"Gesture -> keyboard_hide ({gesture_name})")
+                            self.keyboard_ui.hide_keyboard_from_thread()
+                        else:
+                            # standard OS-level action
+                            print(f"Gesture detected: {gesture_name} -> {action}")
+                            perform_action(action)
+                        # after performing a high-priority gesture, break so lower ones don't run in same cycle
+                        break
+                time.sleep(self.polling)
+            except Exception as e:
+                print("GestureWatcher error:", e)
+                time.sleep(self.polling)
+
+class HUDWindow(QWidget):
+    """Single main window containing HUD status and launching/positioning the toggle button."""
+    def __init__(self, keyboard_ui):
         super().__init__()
-        self.setWindowTitle("Gesture System — Unified")
-        self.setGeometry(60, 60, FRAME_WIDTH + 20, FRAME_HEIGHT + 120)
-        central = QWidget()
-        v = QVBoxLayout(central)
-        self.cam_label = CameraWidget()
-        v.addWidget(self.cam_label, alignment=Qt.AlignCenter)
-
-        # Floating toggle button (keeps on top)
-        self.toggle_btn = QPushButton("⌨️")
-        self.toggle_btn.setFixedSize(56, 56)
-        self.toggle_btn.setStyleSheet("""
-            QPushButton { background-color: #7375db; color: white; border-radius: 28px; font-size:18px; }
-            QPushButton:hover { background-color: #acd9da; color: #100d28; }
-        """)
-        self.toggle_btn.clicked.connect(self.toggle_keyboard)
-
-        # place button inside layout for simplicity
-        v.addWidget(self.toggle_btn, alignment=Qt.AlignLeft)
-
-        self.setCentralWidget(central)
-
-        # AirKeyboard (will be shown/hidden)
-        self.keyboard_ui = AirKeyboard(preload_words=True)
-        self.keyboard_ui.hide_keyboard()
-
-        # MediaPipe + capture
-        self.mp_hands = mp.solutions.hands.Hands(min_detection_confidence=0.6,
-                                                 min_tracking_confidence=0.6,
-                                                 max_num_hands=2)
-        self.mp_draw = mp.solutions.drawing_utils
-
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-        if not self.cap.isOpened():
-            print("ERROR: camera not available.")
-        # state for gestures
-        self.prev_click_time = 0.0
-        self.prev_right_click = 0.0
-        self.prev_palm_center = {}
-        self.last_palm_swipe_time = 0.0
-        self.is_pinching = False
-        self.pinch_start = 0.0
-        self.is_dragging = False
-        self.last_scroll_pos = None
-        self.zoom_active = False
-        self.zoom_base = 0.0
-        self.current_zoom_percent = 100
-
-        # timer for frame processing
+        self.keyboard_ui = keyboard_ui
+        self.setWindowTitle("Gesture HUD")
+        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setMinimumSize(360, 120)
+        self.setStyleSheet("background: rgba(16,13,40,0.92); color: #acd9da; border-radius: 10px;")
+        self._build_ui()
+        # small timer to refresh last-gesture label
+        self._last_gesture = ""
         self.timer = QTimer()
-        self.timer.timeout.connect(self.next_frame)
-        self.timer.start(TIMER_MS)
+        self.timer.timeout.connect(self._refresh)
+        self.timer.start(250)
 
-    def toggle_keyboard(self):
+    def _build_ui(self):
+        l = QVBoxLayout()
+        top = QHBoxLayout()
+        self.status_label = QLabel("🎥 Backend: starting...")
+        self.status_label.setStyleSheet("font-size:13px;")
+        top.addWidget(self.status_label, 1)
+
+        # small pinned toggle button inside HUD
+        self.pinned_btn = QPushButton("⌨️ Toggle Keyboard")
+        self.pinned_btn.setFixedHeight(34)
+        self.pinned_btn.setStyleSheet("""
+            QPushButton { background: #7375db; color: white; border-radius:6px; padding:6px; }
+            QPushButton:hover { background: #acd9da; color: #100d28; }
+        """)
+        self.pinned_btn.clicked.connect(self._on_toggle)
+        top.addWidget(self.pinned_btn, 0, Qt.AlignRight)
+
+        l.addLayout(top)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #00003b;")
+        l.addWidget(sep)
+
+        self.last_label = QLabel("Last gesture: —")
+        self.last_label.setStyleSheet("font-size:12px;")
+        l.addWidget(self.last_label)
+
+        self.setLayout(l)
+
+    def set_status(self, text):
+        self.status_label.setText(text)
+
+    def set_last_gesture(self, g):
+        self._last_gesture = g
+        self.last_label.setText(f"Last gesture: {g}")
+
+    def _on_toggle(self):
         if self.keyboard_ui.isVisible():
             self.keyboard_ui.hide_keyboard()
         else:
             self.keyboard_ui.show_keyboard()
 
-    def next_frame(self):
-        ret, frame = self.cap.read()
-        if not ret:
-            return
-        frame = cv2.flip(frame, 1)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.mp_hands.process(frame_rgb)
-        fh, fw = frame.shape[:2]
-        gesture_hints = []
-        now = time.time()
+    # These thread-safe wrappers call the UI in the Qt thread
+    def show_keyboard_from_thread(self):
+        QTimer.singleShot(0, self.keyboard_ui.show_keyboard)
 
-        index_tip = None
-        thumb_tip = None
-        pinky_tip = None
-        middle_tip = None
-        ring_tip = None
+    def hide_keyboard_from_thread(self):
+        QTimer.singleShot(0, self.keyboard_ui.hide_keyboard)
 
-        if results.multi_hand_landmarks:
-            # iterate hands; we'll process only first for cursor mapping, but gestures may use others
-            for hid, lm in enumerate(results.multi_hand_landmarks):
-                # draw
-                self.mp_draw.draw_landmarks(frame, lm, mp.solutions.hands.HAND_CONNECTIONS)
-                # compute key landmarks
-                tip_index = lm.landmark[8]; tip_thumb = lm.landmark[4]
-                tip_middle = lm.landmark[12]; tip_ring = lm.landmark[16]; tip_pinky = lm.landmark[20]
-                ix, iy = int(tip_index.x * fw), int(tip_index.y * fh)
-                tx, ty = int(tip_thumb.x * fw), int(tip_thumb.y * fh)
-                px, py = int(tip_pinky.x * fw), int(tip_pinky.y * fh)
-                mx, my = int(tip_middle.x * fw), int(tip_middle.y * fh)
-                rx, ry = int(tip_ring.x * fw), int(tip_ring.y * fh)
+    def toggle_from_thread(self):
+        QTimer.singleShot(0, lambda: self._on_toggle())
 
-                # save last seen for gesture logic
-                index_tip = (ix, iy); thumb_tip = (tx, ty); pinky_tip = (px, py)
-                middle_tip = (mx, my); ring_tip = (rx, ry)
+    # refresh hook to update UI state if needed
+    def _refresh(self):
+        # show keyboard visibility state
+        vis = "visible" if self.keyboard_ui.isVisible() else "hidden"
+        self.set_status(f"Keyboard: {vis}  |  gesture_events: {GESTURE_EVENTS.name}")
 
-                # fingertip visual
-                cv2.circle(frame, (ix, iy), 8, (255, 0, 255), -1)
+def launch_backend_process():
+    """Start the hand_tracking_backend.py in a separate process. Return Popen."""
+    if not HAND_BACKEND.exists():
+        raise FileNotFoundError(f"{HAND_BACKEND} not found")
+    cmd = [BACKEND_PY, str(HAND_BACKEND)]
+    # redirect stdout/stderr to file so additional terminal windows don't appear
+    logf = ROOT / "backend.log"
+    f = open(str(logf), "ab")
+    proc = subprocess.Popen(
+        cmd, cwd=str(ROOT),
+        stdout=f, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True
+    )
+    print(f"🎥 Launched hand-tracking backend (pid={proc.pid}), logs->{logf}")
+    return proc, f
 
-                # palm swipe detection (hand center using landmark 0 and 9 like backend)
-                center_x = (lm.landmark[0].x + lm.landmark[9].x)/2
-                prev_center = self.prev_palm_center.get(hid, center_x)
-                dx = center_x - prev_center
-                self.prev_palm_center[hid] = center_x
-                if abs(dx) > 0.12 and (now - self.last_palm_swipe_time) > PALM_SWIPE_COOLDOWN:
-                    direction = "PALM_LEFT" if dx < 0 else "PALM_RIGHT"
-                    # map to app switch
-                    if direction == "PALM_LEFT":
-                        perform_action("switch_prev")
-                    else:
-                        perform_action("switch_next")
-                    self.last_palm_swipe_time = now
-                    gesture_hints.append(direction)
+def main():
+    # launch backend subprocess (it will create its own OpenCV window)
+    backend_proc, log_handle = launch_backend_process()
 
-            # --- Gesture rules (single-hand heuristics) ---
-            # thumb-index pinch distance => left click / drag
-            if index_tip and thumb_tip:
-                d_thumb_index = pixel_dist(index_tip, thumb_tip)
-                if d_thumb_index < PINCH_PIXEL_THRESH:
-                    # pinch start
-                    if not self.is_pinching:
-                        self.is_pinching = True
-                        self.pinch_start = now
-                        gesture_hints.append("Pinch start")
-                    else:
-                        # hold -> drag
-                        if (now - self.pinch_start) >= 0.22 and not self.is_dragging:
-                            mouse.press(Button.left)
-                            self.is_dragging = True
-                            gesture_hints.append("Drag start")
-                else:
-                    # pinch released
-                    if self.is_pinching:
-                        if self.is_dragging:
-                            mouse.release(Button.left)
-                            self.is_dragging = False
-                            gesture_hints.append("Drag end")
-                        else:
-                            # click or double-click
-                            if (now - self.prev_click_time) <= DOUBLE_CLICK_INTERVAL:
-                                mouse.click(Button.left, 2)
-                                gesture_hints.append("Double click")
-                            else:
-                                mouse.click(Button.left, 1)
-                                gesture_hints.append("Click")
-                            self.prev_click_time = now
-                    self.is_pinching = False
+    # Create QApplication (main thread) and AirKeyboard UI
+    print("🧠 Starting Air Keyboard in main thread...")
+    app = QApplication(sys.argv)
+    keyboard_ui = AirKeyboard(preload_words=True)
+    keyboard_ui.hide_keyboard()
 
-            # three-finger right click heuristic: index+middle+ring up & thumb near index
-            # We'll use simple pixel checks: if distances and relative y satisfy approx 'up'
-            if index_tip and middle_tip and ring_tip and thumb_tip:
-                # detect "three fingers up" by using y-coordinates (smaller y is up)
-                # rough condition:
-                ups = (index_tip[1] < frame.shape[0]*0.6) and (middle_tip[1] < frame.shape[0]*0.6) and (ring_tip[1] < frame.shape[0]*0.6)
-                if ups and pixel_dist(index_tip, thumb_tip) < PINCH_PIXEL_THRESH * 1.2:
-                    if (now - self.prev_right_click) > RIGHT_CLICK_COOLDOWN:
-                        mouse.click(Button.right, 1)
-                        self.prev_right_click = now
-                        gesture_hints.append("Right click")
+    # HUD window
+    hud = HUDWindow(keyboard_ui)
+    hud.move(80, 80)
+    hud.show()
 
-            # two-finger scroll: index + middle up and track vertical delta
-            if index_tip and middle_tip:
-                # use normalized y of index & middle to decide scroll
-                curr_scroll = (index_tip[1], index_tip[0])  # (y, x)
-                if self.last_scroll_pos is not None:
-                    dy = self.last_scroll_pos[0] - curr_scroll[0]
-                    dx = self.last_scroll_pos[1] - curr_scroll[1]
-                    if abs(dy) > abs(dx):
-                        amount = int(dy * SCROLL_SENSITIVITY)
-                        if amount != 0:
-                            mouse.scroll(0, amount)
-                            gesture_hints.append("Scroll V")
-                    else:
-                        amount = int(dx * SCROLL_SENSITIVITY)
-                        if amount != 0:
-                            mouse.scroll(amount, 0)
-                            gesture_hints.append("Scroll H")
-                self.last_scroll_pos = curr_scroll
+    # small floating quick-toggle button (optional)
+    # reuse keyboard_ui.toggle_from_thread via HUD toggle
 
-            # zoom with thumb-pinky spread
-            if thumb_tip and pinky_tip:
-                d_thumb_pinky = pixel_dist(thumb_tip, pinky_tip)
-                # engage zoom mode if spread beyond threshold
-                if d_thumb_pinky > 80:
-                    if not self.zoom_active:
-                        self.zoom_active = True
-                        self.zoom_base = d_thumb_pinky
-                    else:
-                        delta = d_thumb_pinky - self.zoom_base
-                        if abs(delta) > 4:
-                            smooth_delta = delta * HZOOM_SENSITIVITY
-                            keyboard.press(ZOOM_MOD_KEY)
-                            mouse.scroll(0, round(smooth_delta))
-                            keyboard.release(ZOOM_MOD_KEY)
-                            # update base gradually
-                            self.zoom_base += smooth_delta * 0.6
-                            gesture_hints.append("Zoom")
-                else:
-                    self.zoom_active = False
+    # Start gesture watcher thread
+    watcher = GestureWatcher(hud)
+    watcher.start()
 
-            # L-Shape (index + thumb up, others down) -> lock screen
-            # We check index tip higher than its pip and thumb above thumb_ip approx
-            # heuristics only: index.y < index_pip.y and thumb.y < some landmark (we lack pip here: use landmark 2)
-            # We'll approximate by comparing index tip vs landmark 6 (index pip) if available
-            # (MediaPipe: index pip is landmark 6, thumb IP is 3)
-            # We'll fetch those if possible:
-            # NOTE: above we only stored tips. To be precise, we could re-extract landmarks; using a quick pass:
-            lm0 = results.multi_hand_landmarks[0]
-            idx_tip_y = lm0.landmark[8].y if lm0 else None
-            idx_pip_y = lm0.landmark[6].y if lm0 else None
-            thumb_ip_y = lm0.landmark[3].y if lm0 else None
-            mid_y = lm0.landmark[12].y if lm0 else None
-            ring_y = lm0.landmark[16].y if lm0 else None
-            pinky_y = lm0.landmark[20].y if lm0 else None
-            if idx_tip_y and idx_pip_y and thumb_ip_y:
-                if idx_tip_y < idx_pip_y and thumb_ip_y < lm0.landmark[2].y and (mid_y > idx_pip_y and ring_y > idx_pip_y and pinky_y > idx_pip_y):
-                    perform_action("lock_screen")
-                    gesture_hints.append("L -> lock")
-                    # small cooldown
-                    time.sleep(0.4)
-
-            # Index + little finger up -> toggle keyboard (gesture-level)
-            # Use tip vs pip heuristic: tip y < pip y => finger up
-            try:
-                # index tip 8, index pip 6, pinky tip 20, pinky pip 18
-                mh = results.multi_hand_landmarks[0]
-                idx_up = mh.landmark[8].y < mh.landmark[6].y
-                pinky_up = mh.landmark[20].y < mh.landmark[18].y
-                if idx_up and pinky_up:
-                    # toggle keyboard (user requested this)
-                    # to avoid flipping every frame, add small cooldown
-                    if not hasattr(self, "_kbd_toggle_last") or (now - self._kbd_toggle_last) > 1.0:
-                        self.toggle_keyboard()
-                        self._kbd_toggle_last = now
-                        gesture_hints.append("Index+Pinky -> toggle keyboard")
-            except Exception:
-                pass
-
-        else:
-            # no hands: reset some state
-            self.last_scroll_pos = None
-            self.zoom_active = False
-
-        # render gesture hints overlay onto frame
-        if gesture_hints:
-            hint = " | ".join(gesture_hints)
-            cv2.putText(frame, hint, (10, frame.shape[0]-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,200,0), 2)
-
-        # convert BGR -> QImage -> pixmap
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb.shape
-        bytes_per_line = ch * w
-        qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        pix = QPixmap.fromImage(qimg).scaled(self.cam_label.width(), self.cam_label.height(), Qt.KeepAspectRatio)
-        self.cam_label.setPixmap(pix)
-
-    def closeEvent(self, ev):
-        self.timer.stop()
-        if self.cap:
-            self.cap.release()
-        # close keyboard UI
+    def cleanup():
+        print("⚙️ Shutting down gesture_system...")
+        watcher.stop()
         try:
-            self.keyboard_ui.close()
+            if backend_proc.poll() is None:
+                backend_proc.terminate()
+                try:
+                    backend_proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    backend_proc.kill()
+        except Exception as e:
+            print("Error terminating backend:", e)
+        try:
+            log_handle.close()
         except Exception:
             pass
-        super().closeEvent(ev)
 
-# ---- main ----
-def main():
-    # ensure QApplication in main thread (macOS requirement)
-    app = QApplication(sys.argv)
-    win = GestureSystemWindow()
-    win.show()
-    print("Unified gesture system started. Toggle keyboard with button or index+pinky gesture.")
-    sys.exit(app.exec_())
+    app.aboutToQuit.connect(cleanup)
+
+    hud.set_status("Ready — backend running")
+    print("⌨️ AirKeyboard + HUD ready.")
+    try:
+        sys.exit(app.exec_())
+    finally:
+        cleanup()
 
 if __name__ == "__main__":
     main()

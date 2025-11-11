@@ -1,0 +1,23 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1762547053.526074  504604 gl_context.cc:357] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1762547053.578369  504791 inference_feedback_manager.cc:114] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1762547053.588526  504789 inference_feedback_manager.cc:114] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+I0000 00:00:1762547057.034881  504604 gl_context.cc:357] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+W0000 00:00:1762547057.062672  504957 inference_feedback_manager.cc:114] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1762547057.083538  504959 inference_feedback_manager.cc:114] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+/opt/homebrew/lib/python3.11/site-packages/google/protobuf/symbol_database.py:55: UserWarning: SymbolDatabase.GetPrototype() is deprecated. Please use message_factory.GetMessageClass() instead. SymbolDatabase.GetPrototype() will be removed soon.
+  warnings.warn('SymbolDatabase.GetPrototype() is deprecated. Please '
+/opt/homebrew/lib/python3.11/site-packages/google/protobuf/symbol_database.py:55: UserWarning: SymbolDatabase.GetPrototype() is deprecated. Please use message_factory.GetMessageClass() instead. SymbolDatabase.GetPrototype() will be removed soon.
+  warnings.warn('SymbolDatabase.GetPrototype() is deprecated. Please '
+Action: switch to next app
+Action: switch to previous app
+Action: switch to previous app
+Action: switch to previous app
+Action: switch to previous app
+Action: switch to previous app
+Action: switch to next app
+Action: switch to next app
+Action: switch to previous app
+Action: switch to next app
+Shutdown complete.
